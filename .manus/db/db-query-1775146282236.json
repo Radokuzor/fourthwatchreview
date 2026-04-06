@@ -1,0 +1,9 @@
+{
+  "query": "CREATE TABLE `brand_templates` (\n\t`id` int AUTO_INCREMENT NOT NULL,\n\t`clientId` int NOT NULL,\n\t`businessContext` text,\n\t`brandVoice` text,\n\t`toneGuidelines` text,\n\t`responseTemplates` json,\n\t`avoidPhrases` text,\n\t`mustIncludePhrases` text,\n\t`languagePreference` varchar(16) DEFAULT 'en',\n\t`createdAt` timestamp NOT NULL DEFAULT (now()),\n\t`updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,\n\tCONSTRAINT `brand_templates_id` PRIMARY KEY(`id`),\n\tCONSTRAINT `brand_templates_clientId_unique` UNIQUE(`clientId`)\n)",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway05.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2r3K6V9i9E6iuKt.05bcbca12847 --database dd2dpCppv6NJGLXJF3QZ3N --execute CREATE TABLE `brand_templates` (\n\t`id` int AUTO_INCREMENT NOT NULL,\n\t`clientId` int NOT NULL,\n\t`businessContext` text,\n\t`brandVoice` text,\n\t`toneGuidelines` text,\n\t`responseTemplates` json,\n\t`avoidPhrases` text,\n\t`mustIncludePhrases` text,\n\t`languagePreference` varchar(16) DEFAULT 'en',\n\t`createdAt` timestamp NOT NULL DEFAULT (now()),\n\t`updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,\n\tCONSTRAINT `brand_templates_id` PRIMARY KEY(`id`),\n\tCONSTRAINT `brand_templates_clientId_unique` UNIQUE(`clientId`)\n)",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 1777
+}

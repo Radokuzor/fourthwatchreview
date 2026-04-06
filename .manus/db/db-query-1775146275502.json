@@ -1,0 +1,9 @@
+{
+  "query": "CREATE TABLE `approval_tokens` (\n\t`id` int AUTO_INCREMENT NOT NULL,\n\t`reviewResponseId` int NOT NULL,\n\t`token` varchar(128) NOT NULL,\n\t`action` enum('approve','reject') NOT NULL,\n\t`expiresAt` bigint NOT NULL,\n\t`usedAt` bigint,\n\t`createdAt` timestamp NOT NULL DEFAULT (now()),\n\tCONSTRAINT `approval_tokens_id` PRIMARY KEY(`id`),\n\tCONSTRAINT `approval_tokens_token_unique` UNIQUE(`token`)\n)",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway05.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2r3K6V9i9E6iuKt.05bcbca12847 --database dd2dpCppv6NJGLXJF3QZ3N --execute CREATE TABLE `approval_tokens` (\n\t`id` int AUTO_INCREMENT NOT NULL,\n\t`reviewResponseId` int NOT NULL,\n\t`token` varchar(128) NOT NULL,\n\t`action` enum('approve','reject') NOT NULL,\n\t`expiresAt` bigint NOT NULL,\n\t`usedAt` bigint,\n\t`createdAt` timestamp NOT NULL DEFAULT (now()),\n\tCONSTRAINT `approval_tokens_id` PRIMARY KEY(`id`),\n\tCONSTRAINT `approval_tokens_token_unique` UNIQUE(`token`)\n)",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 2076
+}
