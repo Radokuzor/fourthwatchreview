@@ -5,6 +5,8 @@ import path from "node:path";
 import { defineConfig } from "vite";
 
 export default defineConfig({
+  // Expose CLERK_* to the client so we can use CLERK_PUBLISHABLE_KEY (not only VITE_*).
+  envPrefix: ["VITE_", "CLERK_"],
   plugins: [react(), tailwindcss(), jsxLocPlugin()],
   resolve: {
     alias: {

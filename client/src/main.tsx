@@ -8,10 +8,10 @@ import superjson from "superjson";
 import App from "./App";
 import "./index.css";
 
-const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+const PUBLISHABLE_KEY = import.meta.env.CLERK_PUBLISHABLE_KEY;
 
 if (!PUBLISHABLE_KEY) {
-  console.warn("[Auth] VITE_CLERK_PUBLISHABLE_KEY is not set");
+  console.warn("[Auth] CLERK_PUBLISHABLE_KEY is not set");
 }
 
 const queryClient = new QueryClient({

@@ -446,7 +446,7 @@ export default function FreeTrial() {
     setOtpSending(true);
     setOtpError(null);
 
-    if (!import.meta.env.VITE_CLERK_PUBLISHABLE_KEY) {
+    if (!import.meta.env.CLERK_PUBLISHABLE_KEY) {
       setOtpSending(false);
       setStep("business");
       return;

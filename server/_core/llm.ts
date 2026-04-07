@@ -219,15 +219,16 @@ function getClient() {
 
 function wrapOpenAIResult(completion: OpenAI.Chat.ChatCompletion): InvokeResult {
   const choice = completion.choices[0];
-  const raw = choice?.message?.content;
-  const text =
-    typeof raw === "string"
-      ? raw
-      : Array.isArray(raw)
-        ? raw
-            .map((p) => (p.type === "text" ? p.text : JSON.stringify(p)))
-            .join("")
-        : "";
+  const raw: unknown = choice?.message?.content;
+  let text = "";
+  if (typeof raw === "string") {
+    text = raw;
+  } else if (Array.isArray(raw)) {
+    for (const p of raw as OpenAI.Chat.ChatCompletionContentPart[]) {
+      if (p.type === "text") text += p.text;
+      else text += JSON.stringify(p);
+    }
+  }
 
   return {
     id: completion.id,
