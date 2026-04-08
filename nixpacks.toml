@@ -1,11 +1,12 @@
 [phases.setup]
 nixPkgs = ["nodejs_20"]
 
+# npx runs pnpm without Corepack (avoids signature/key mismatches on Nix Node images).
 [phases.install]
-cmds = ["corepack enable && corepack prepare pnpm@10.4.1 --activate && pnpm install --frozen-lockfile"]
+cmds = ["npx --yes pnpm@10.4.1 install --frozen-lockfile"]
 
 [phases.build]
-cmds = ["corepack enable && corepack prepare pnpm@10.4.1 --activate && pnpm build"]
+cmds = ["npx --yes pnpm@10.4.1 build"]
 
 [start]
 cmd = "node dist/index.js"
