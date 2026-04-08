@@ -24,6 +24,30 @@ export type ReviewResult = {
   ownerResponse: string | null;
 };
 
+/** True when Google shows a non-empty owner reply (API often returns "" or placeholders — those are "no reply"). */
+export function reviewHasOwnerResponse(review: Pick<ReviewResult, "ownerResponse">): boolean {
+  return review.ownerResponse != null && String(review.ownerResponse).trim().length > 0;
+}
+
+function extractOwnerResponseFromRawReview(r: {
+  response?: { response_from_owner_string?: unknown; text?: unknown };
+  owner_answer?: unknown;
+  owner_response?: unknown;
+}): string | null {
+  const chunks = [
+    r.response?.response_from_owner_string,
+    r.response?.text,
+    r.owner_answer,
+    r.owner_response,
+  ];
+  for (const c of chunks) {
+    if (c == null) continue;
+    const s = String(c).replace(/\s+/g, " ").trim();
+    if (s.length > 0) return s;
+  }
+  return null;
+}
+
 export type StaffSignal = {
   name: string;
   sentiment: "positive" | "negative";
@@ -132,7 +156,7 @@ export async function getBusinessReviews(dataId: string): Promise<ReviewResult[]
         rating: typeof r.rating === "number" ? r.rating : parseInt(String(r.rating ?? "3")),
         text: r.snippet ?? r.text ?? r.description ?? "",
         relativeTime: r.date ?? r.relative_time ?? "recently",
-        ownerResponse: r.response?.response_from_owner_string ?? r.owner_answer ?? null,
+        ownerResponse: extractOwnerResponseFromRawReview(r),
       });
     }
 
@@ -260,7 +284,7 @@ export async function runAIAnalysis(
   const industry = category ?? "local business";
   const reviewText = reviews
     .slice(0, 20)
-    .map((r, i) => `Review ${i + 1} (${r.rating}★, ${r.relativeTime}${r.ownerResponse ? ", owner replied" : ", NO reply"}): "${r.text}"`)
+    .map((r, i) => `Review ${i + 1} (${r.rating}★, ${r.relativeTime}${reviewHasOwnerResponse(r) ? ", owner replied" : ", NO reply"}): "${r.text}"`)
     .join("\n");
 
   const prompt = `You are a business intelligence analyst specializing in the ${industry} industry.
@@ -398,10 +422,23 @@ export function computeBaseMetrics(
     };
   }
 
-  const answered = reviews.filter((r) => r.ownerResponse !== null).length;
-  const actualUnanswered = reviews.filter((r) => r.ownerResponse === null).length;
+  const answered = reviews.filter(reviewHasOwnerResponse).length;
+  const actualUnanswered = reviews.length - answered;
   const totalReviews = totalReviewsFromAPI ?? reviews.length;
-  const responseRate = Math.round((answered / reviews.length) * 100);
+
+  // When Google reports more reviews than we fetched, extrapolate from the sample so % aligns with listing scale
+  let responseRate: number;
+  if (totalReviews > reviews.length) {
+    const estUnanswered = Math.min(
+      totalReviews,
+      Math.round((actualUnanswered / reviews.length) * totalReviews)
+    );
+    const estAnswered = Math.max(0, totalReviews - estUnanswered);
+    responseRate = Math.round((estAnswered / totalReviews) * 100);
+  } else {
+    responseRate = Math.round((answered / reviews.length) * 100);
+  }
+  responseRate = Math.max(0, Math.min(100, responseRate));
   const avgRating = reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length;
   const sentimentScore = Math.round(((avgRating - 1) / 4) * 100);
 

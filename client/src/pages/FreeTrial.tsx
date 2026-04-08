@@ -103,6 +103,9 @@ const PLANS: Plan[] = [
   },
 ];
 
+/** Must match Home.tsx — JSON snapshot from getAuditData for same business */
+const FT_HOME_AUDIT_SNAPSHOT_KEY = "ft_home_audit_snapshot";
+
 const SERVICES = [
   { icon: BarChart3, color: "bg-blue-500", title: "Business Audit", desc: "Deep forensic scan of your Google presence — health score, response rate, and revenue gaps." },
   { icon: TrendingUp, color: "bg-violet-500", title: "Sentiment Analysis", desc: "Track how customer feelings shift over time. Spot problems before they become crises." },
@@ -410,6 +413,7 @@ export default function FreeTrial() {
   const sendDemoMutation = trpc.onboarding.sendDemoApproval.useMutation();
   const saveBrandVoiceMutation = trpc.onboarding.saveBrandVoice.useMutation();
   const runAndSaveAuditMutation = trpc.onboarding.runAndSaveAudit.useMutation();
+  const saveHomeAuditSnapshotMutation = trpc.onboarding.saveHomeAuditSnapshot.useMutation();
   const promoActivateMutation = trpc.onboarding.promoActivate.useMutation();
   const persistAuditFromHomeRef = useRef(false);
   const pollStatusQuery = trpc.onboarding.pollDemoStatus.useQuery(
@@ -464,18 +468,56 @@ export default function FreeTrial() {
 
     const uid = meQuery.data?.id && meQuery.data.id > 0 ? meQuery.data.id : undefined;
 
-    void runAndSaveAuditMutation
-      .mutateAsync({
-        placeId: auditBusiness.placeId,
-        businessName: auditBusiness.name,
-        businessCategory: auditBusiness.category ?? undefined,
-        businessAddress: auditBusiness.address ?? undefined,
-        email: em,
-        userId: uid,
-      })
+    type HomeSnap = {
+      v: number;
+      placeId: string;
+      businessName: string;
+      analysis: unknown;
+      metrics: unknown;
+    };
+    let homeSnap: HomeSnap | null = null;
+    try {
+      const raw = sessionStorage.getItem(FT_HOME_AUDIT_SNAPSHOT_KEY);
+      if (raw) {
+        const o = JSON.parse(raw) as HomeSnap;
+        if (
+          o?.v === 1 &&
+          o.placeId === auditBusiness.placeId &&
+          o.businessName === auditBusiness.name &&
+          o.analysis &&
+          o.metrics
+        ) {
+          homeSnap = o;
+        }
+      }
+    } catch {
+      homeSnap = null;
+    }
+
+    const savePromise = homeSnap
+      ? saveHomeAuditSnapshotMutation.mutateAsync({
+          placeId: auditBusiness.placeId,
+          businessName: auditBusiness.name,
+          analysis: homeSnap.analysis,
+          metrics: homeSnap.metrics,
+          email: em,
+          userId: uid,
+        })
+      : runAndSaveAuditMutation.mutateAsync({
+          placeId: auditBusiness.placeId,
+          businessName: auditBusiness.name,
+          businessCategory: auditBusiness.category ?? undefined,
+          businessAddress: auditBusiness.address ?? undefined,
+          totalReviews: auditBusiness.totalReviews ?? null,
+          email: em,
+          userId: uid,
+        });
+
+    void savePromise
       .then((result) => {
         sessionStorage.setItem("ft_audit_id", String(result.auditId));
         setAuditSavedId(result.auditId);
+        sessionStorage.removeItem(FT_HOME_AUDIT_SNAPSHOT_KEY);
       })
       .catch(() => {
         persistAuditFromHomeRef.current = false;
@@ -659,6 +701,7 @@ export default function FreeTrial() {
           businessName: biz.name,
           businessCategory: biz.category ?? undefined,
           businessAddress: biz.address ?? undefined,
+          totalReviews: biz.totalReviews ?? null,
           email: email || undefined,
           userId: uid,
         })

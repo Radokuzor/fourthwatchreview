@@ -40,7 +40,7 @@ import {
 } from "./reviewPipeline";
 import { generateAIResponse, regenerateAIResponse } from "./aiResponse";
 import { buildGoogleOAuthUrl, exchangeCodeForTokens, listAccounts, listLocations } from "./gbp";
-import { searchBusinesses, getBusinessReviews, computeBaseMetrics, runAIAnalysis, getCompetitorReviews, type StaffSignal } from "./scraper";
+import { searchBusinesses, getBusinessReviews, computeBaseMetrics, runAIAnalysis, getCompetitorReviews, reviewHasOwnerResponse, type StaffSignal } from "./scraper";
 import { sendSms } from "./sms";
 import { sendApprovalEmail } from "./emailService";
 
@@ -490,7 +490,7 @@ export const appRouter = router({
           rating: r.rating,
           text: r.text,
           relativeTime: r.relativeTime,
-          hasOwnerResponse: r.ownerResponse !== null,
+          hasOwnerResponse: reviewHasOwnerResponse(r),
         }));
 
         return { metrics, analysis, reviews: reviewSummary, competitorNames };
@@ -823,7 +823,7 @@ Write a warm, professional, personalized response (2-4 sentences). Thank the rev
             rating: r.rating,
             text: r.text,
             relativeTime: r.relativeTime,
-            hasOwnerResponse: !!r.ownerResponse,
+            hasOwnerResponse: reviewHasOwnerResponse(r),
           })),
         };
       }),
@@ -1014,6 +1014,33 @@ Write a warm, professional, personalized response (2-4 sentences). Thank the rev
         return { saved: true };
       }),
 
+    // Persist the exact payload from the home-page free audit (no second AI run)
+    saveHomeAuditSnapshot: publicProcedure
+      .input(z.object({
+        placeId: z.string(),
+        businessName: z.string(),
+        analysis: z.any(),
+        metrics: z.any(),
+        email: z.string().email().optional(),
+        userId: z.number().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const auditPayload = {
+          analysis: input.analysis,
+          metrics: input.metrics,
+          businessName: input.businessName,
+          placeId: input.placeId,
+        };
+        const auditId = await saveUserAudit({
+          userId: input.userId ?? null,
+          email: input.email ?? null,
+          placeId: input.placeId,
+          businessName: input.businessName,
+          auditJson: JSON.stringify(auditPayload),
+        });
+        return { success: true as const, auditId };
+      }),
+
     // Run full AI audit + save to DB (called from onboarding step 2)
     runAndSaveAudit: publicProcedure
       .input(z.object({
@@ -1021,6 +1048,8 @@ Write a warm, professional, personalized response (2-4 sentences). Thank the rev
         businessName: z.string(),
         businessCategory: z.string().optional(),
         businessAddress: z.string().optional(),
+        /** Google Places-style total review count — same as free-tool getAuditData for matching metrics */
+        totalReviews: z.number().nullable().optional(),
         email: z.string().email().optional(),
         userId: z.number().optional(),
       }))
@@ -1028,16 +1057,23 @@ Write a warm, professional, personalized response (2-4 sentences). Thank the rev
         try {
           // Fetch reviews
           const reviews = await getBusinessReviews(input.placeId);
-          // Fetch competitors for gap analysis
-          const competitors = input.businessCategory && input.businessAddress
-            ? await getCompetitorReviews(input.businessCategory, input.businessAddress)
-            : [];
-          const competitorNames = competitors.map((c) => c.name);
+          // Same competitor shaping as audit.getAuditData
+          let competitorNames: string[] = [];
+          if (input.businessCategory && input.businessAddress) {
+            try {
+              const competitors = await getCompetitorReviews(input.businessCategory, input.businessAddress);
+              competitorNames = competitors
+                .filter((c) => c.name !== input.businessName)
+                .slice(0, 3)
+                .map((c) => c.name);
+            } catch (e) {
+              console.warn("[Onboarding] competitor fetch failed:", e);
+            }
+          }
           // Run AI analysis
           const analysis = await runAIAnalysis(reviews, input.businessName, input.businessCategory ?? null, competitorNames);
-          // Compute metrics
-          const totalFromAPI = reviews.length;
-          const metrics = computeBaseMetrics(reviews, totalFromAPI);
+          // Match free-tool metrics: use Places total when provided, else fetched count
+          const metrics = computeBaseMetrics(reviews, input.totalReviews ?? null);
           // Save to DB
           const auditPayload = { analysis, metrics, businessName: input.businessName, placeId: input.placeId };
           const auditId = await saveUserAudit({

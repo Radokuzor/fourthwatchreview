@@ -128,3 +128,18 @@ describe("onboarding.runAndSaveAudit", () => {
     expect(result.metrics).toBeDefined();
   });
 });
+
+describe("onboarding.saveHomeAuditSnapshot", () => {
+  it("persists provided analysis/metrics and returns auditId", async () => {
+    const caller = appRouter.createCaller(createPublicContext());
+    const result = await caller.onboarding.saveHomeAuditSnapshot({
+      placeId: "ChIJsnap",
+      businessName: "Snap Cafe",
+      analysis: { painPoints: ["x"], topPraises: [], staffSignals: [], operationalIssues: [], doThisNow: [], sentimentTrend: { oldestFour: 50, newestFour: 50, direction: "stable", summary: "" }, competitorKeywordGap: [] },
+      metrics: { totalReviews: 12, averageRating: 4.5, responseRate: 80, unansweredCount: 2, sentimentScore: 70, healthScore: 75, reviewVelocity: "~3/mo", competitorBenchmark: "ok" },
+      email: "snap@example.com",
+    });
+    expect(result.success).toBe(true);
+    expect(result.auditId).toBe(42);
+  });
+});

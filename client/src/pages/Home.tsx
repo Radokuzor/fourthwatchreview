@@ -56,14 +56,8 @@ type ReviewSummary = {
 
 type Step = "search" | "results" | "loading" | "audit" | "demo";
 
-const FORENSIC_STEPS = [
-  "Scanning Google Business Profile...",
-  "Analyzing customer sentiment patterns...",
-  "Mapping review response gaps...",
-  "Calculating business health score...",
-  "Benchmarking against competitors...",
-  "Identifying revenue recovery opportunities...",
-];
+/** Must match FreeTrial — persisted home free-audit payload for dashboard without re-running AI */
+const FT_HOME_AUDIT_SNAPSHOT_KEY = "ft_home_audit_snapshot";
 
 function StarRating({ rating }: { rating: number }) {
   return (
@@ -109,7 +103,6 @@ export default function Home() {
   const [businesses, setBusinesses] = useState<BusinessResult[]>([]);
   const [selectedBusiness, setSelectedBusiness] = useState<BusinessResult | null>(null);
   const [auditData, setAuditData] = useState<{ metrics: AuditMetrics; analysis: AuditAnalysis; reviews: ReviewSummary[]; competitorNames: string[] } | null>(null);
-  const [forensicStep, setForensicStep] = useState(0);
   const [email, setEmail] = useState("");
   const [emailCaptured, setEmailCaptured] = useState(false);
   const [showEmailDialog, setShowEmailDialog] = useState(false);
@@ -163,14 +156,33 @@ export default function Home() {
   const handleSelectBusiness = async (biz: BusinessResult) => {
     setSelectedBusiness(biz);
     setStep("loading");
-    setForensicStep(0);
-    for (let i = 0; i < FORENSIC_STEPS.length; i++) {
-      await new Promise((r) => setTimeout(r, 800));
-      setForensicStep(i + 1);
-    }
     const result = await auditQuery.refetch();
-    if (result.data) setAuditData(result.data as unknown as { metrics: AuditMetrics; analysis: AuditAnalysis; reviews: ReviewSummary[]; competitorNames: string[] });
-    await new Promise((r) => setTimeout(r, 400));
+    if (result.data) {
+      const data = result.data as unknown as {
+        metrics: AuditMetrics;
+        analysis: AuditAnalysis;
+        reviews: ReviewSummary[];
+        competitorNames: string[];
+      };
+      setAuditData(data);
+      try {
+        sessionStorage.setItem(
+          FT_HOME_AUDIT_SNAPSHOT_KEY,
+          JSON.stringify({
+            v: 1,
+            placeId: biz.placeId,
+            businessName: biz.name,
+            totalReviews: biz.totalReviews,
+            category: biz.category,
+            address: biz.address,
+            analysis: data.analysis,
+            metrics: data.metrics,
+          })
+        );
+      } catch {
+        /* quota / private mode */
+      }
+    }
     setStep("audit");
     setTimeout(() => setShowEmailDialog(true), 2000);
   };
@@ -449,25 +461,14 @@ export default function Home() {
             </div>
           )}
 
-          {/* Forensic Loading */}
+          {/* Audit in progress */}
           {step === "loading" && (
             <div className="text-center py-16">
-              <div className="w-20 h-20 bg-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-8 animate-pulse">
-                <BarChart3 className="h-10 w-10 text-white" />
-              </div>
+              <Loader2 className="h-12 w-12 text-blue-600 animate-spin mx-auto mb-6" />
               <h2 className="text-2xl font-bold text-slate-900 mb-2">Running Business Forensic Analysis</h2>
-              <p className="text-slate-500 mb-10">Analyzing <span className="font-semibold text-blue-600">{selectedBusiness?.name}</span></p>
-              <div className="max-w-md mx-auto space-y-3">
-                {FORENSIC_STEPS.map((s, i) => (
-                  <div key={i} className={`flex items-center gap-3 p-3 rounded-lg transition-all ${
-                    i < forensicStep ? "bg-emerald-50 text-emerald-700" : i === forensicStep ? "bg-blue-50 text-blue-700" : "bg-slate-50 text-slate-400"}`}>
-                    {i < forensicStep ? <CheckCircle2 className="h-5 w-5 text-emerald-500 shrink-0" /> :
-                      i === forensicStep ? <Loader2 className="h-5 w-5 text-blue-500 animate-spin shrink-0" /> :
-                      <div className="h-5 w-5 rounded-full border-2 border-slate-300 shrink-0" />}
-                    <span className="text-sm font-medium">{s}</span>
-                  </div>
-                ))}
-              </div>
+              <p className="text-slate-500">
+                Analyzing <span className="font-semibold text-blue-600">{selectedBusiness?.name}</span>
+              </p>
             </div>
           )}
 
