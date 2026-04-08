@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { loadStripe } from "@stripe/stripe-js";
 import { Elements, CardElement, useStripe, useElements } from "@stripe/react-stripe-js";
-import { useSignIn, useSignUp, useUser } from "@clerk/clerk-react";
+import { useClerk, useSignIn, useSignUp, useUser } from "@clerk/clerk-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type OnboardingStep =
@@ -357,7 +357,8 @@ export default function FreeTrial() {
   })();
   const hasAuditContext = !!auditBusiness && !!auditEmail;
 
-  const [step, setStep] = useState<OnboardingStep>(hasAuditContext ? "showcase" : "welcome");
+  // Always start at welcome; signed-in users (e.g. already verified on Home) jump to showcase/business via effect — never show showcase while logged out.
+  const [step, setStep] = useState<OnboardingStep>("welcome");
   const [email, setEmail] = useState(auditEmail);
   const [phone, setPhone] = useState("");
   const [businessQuery, setBusinessQuery] = useState("");
@@ -388,7 +389,15 @@ export default function FreeTrial() {
 
   const { signIn, isLoaded: signInLoaded } = useSignIn();
   const { signUp, isLoaded: signUpLoaded } = useSignUp();
-  const { isSignedIn } = useUser();
+  const { isSignedIn, user: clerkUser } = useUser();
+  const { setActive } = useClerk();
+
+  const meQuery = trpc.auth.me.useQuery(undefined, {
+    enabled: Boolean(isSignedIn),
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+  const linkAuditToUserMutation = trpc.onboarding.linkAuditToUser.useMutation();
 
   // Audit state (background generation)
   const [auditRunning, setAuditRunning] = useState(false);
@@ -402,6 +411,7 @@ export default function FreeTrial() {
   const saveBrandVoiceMutation = trpc.onboarding.saveBrandVoice.useMutation();
   const runAndSaveAuditMutation = trpc.onboarding.runAndSaveAudit.useMutation();
   const promoActivateMutation = trpc.onboarding.promoActivate.useMutation();
+  const persistAuditFromHomeRef = useRef(false);
   const pollStatusQuery = trpc.onboarding.pollDemoStatus.useQuery(
     { token: demoToken ?? "" },
     { enabled: !!demoToken && step === "waiting", refetchInterval: 3000 }
@@ -426,17 +436,86 @@ export default function FreeTrial() {
   // Cleanup polling on unmount
   useEffect(() => () => { if (pollingRef.current) clearInterval(pollingRef.current); }, []);
 
-  // If already signed in, skip OTP and welcome steps
+  useEffect(() => {
+    if (!isSignedIn) persistAuditFromHomeRef.current = false;
+  }, [isSignedIn]);
+
+  // If already signed in, skip OTP and welcome (no second account flow after Home audit + OTP)
   useEffect(() => {
     if (!isSignedIn) return;
     if (step === "otp") {
-      // User verified OTP or was already signed in — go to business if no audit context, else showcase
       setStep(hasAuditContext ? "showcase" : "business");
     } else if (step === "welcome") {
-      // User is already signed in and lands on welcome — skip to business or showcase
       setStep(hasAuditContext ? "showcase" : "business");
     }
   }, [isSignedIn, step, hasAuditContext]);
+
+  // Persist full audit to user_audits when user arrived from Home with business context (skips business step)
+  useEffect(() => {
+    if (!isSignedIn || !hasAuditContext || !auditBusiness) return;
+    if (persistAuditFromHomeRef.current) return;
+
+    const em =
+      (meQuery.data?.email || clerkUser?.primaryEmailAddress?.emailAddress || email || auditEmail).trim();
+    if (!em.includes("@")) return;
+
+    persistAuditFromHomeRef.current = true;
+    sessionStorage.setItem("ft_audit_saving", "1");
+
+    const uid = meQuery.data?.id && meQuery.data.id > 0 ? meQuery.data.id : undefined;
+
+    void runAndSaveAuditMutation
+      .mutateAsync({
+        placeId: auditBusiness.placeId,
+        businessName: auditBusiness.name,
+        businessCategory: auditBusiness.category ?? undefined,
+        businessAddress: auditBusiness.address ?? undefined,
+        email: em,
+        userId: uid,
+      })
+      .then((result) => {
+        sessionStorage.setItem("ft_audit_id", String(result.auditId));
+        setAuditSavedId(result.auditId);
+      })
+      .catch(() => {
+        persistAuditFromHomeRef.current = false;
+      })
+      .finally(() => {
+        sessionStorage.removeItem("ft_audit_saving");
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once per signed-in + audit context; avoid mutation dep churn
+  }, [
+    isSignedIn,
+    hasAuditContext,
+    auditBusiness?.placeId,
+    auditBusiness?.name,
+    auditBusiness?.category,
+    auditBusiness?.address,
+    auditEmail,
+    email,
+    clerkUser?.primaryEmailAddress?.emailAddress,
+    meQuery.data?.email,
+    meQuery.data?.id,
+  ]);
+
+  // Attach email-keyed audit rows to DB user id when available (idempotent UPDATE; safe if row not inserted yet)
+  useEffect(() => {
+    if (!isSignedIn || !hasAuditContext) return;
+    const uid = meQuery.data?.id;
+    const em =
+      (meQuery.data?.email || clerkUser?.primaryEmailAddress?.emailAddress || email || auditEmail).trim();
+    if (!uid || uid <= 0 || !em.includes("@")) return;
+    linkAuditToUserMutation.mutate({ email: em, userId: uid });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    isSignedIn,
+    hasAuditContext,
+    meQuery.data?.id,
+    meQuery.data?.email,
+    clerkUser?.primaryEmailAddress?.emailAddress,
+    email,
+    auditEmail,
+  ]);
 
   const clerkReady = signInLoaded && signUpLoaded && !!signIn && !!signUp;
 
@@ -448,7 +527,7 @@ export default function FreeTrial() {
 
     if (!import.meta.env.CLERK_PUBLISHABLE_KEY) {
       setOtpSending(false);
-      setStep("business");
+      setStep(hasAuditContext ? "showcase" : "business");
       return;
     }
 
@@ -496,24 +575,42 @@ export default function FreeTrial() {
     setOtpError(null);
     try {
       if (otpFlow === "signIn" && clerkSignInAttempt) {
-        const result = await (clerkSignInAttempt as { attemptFirstFactor: (a: unknown) => Promise<{ status: string }> }).attemptFirstFactor({
+        const si = clerkSignInAttempt as {
+          attemptFirstFactor: (a: unknown) => Promise<{ status: string }>;
+          createdSessionId: string | null;
+        };
+        const result = await si.attemptFirstFactor({
           strategy: "email_code",
           code: otpCode,
         });
-        if (result.status === "complete") {
-          toast.success("Welcome back! You're signed in.");
-          setStep(auditBusiness ? "showcase" : "business");
-        } else {
+        if (result.status !== "complete") {
           setOtpError("Verification incomplete — please try again.");
+          return;
         }
+        if (si.createdSessionId) {
+          await setActive({ session: si.createdSessionId });
+        }
+        await new Promise((r) => setTimeout(r, 150));
+        toast.success("Welcome back! You're signed in.");
+        setStep(auditBusiness ? "showcase" : "business");
       } else if (otpFlow === "signUp" && clerkSignUpAttempt) {
-        const result = await (clerkSignUpAttempt as { attemptEmailAddressVerification: (a: { code: string }) => Promise<{ status: string }> }).attemptEmailAddressVerification({ code: otpCode });
-        if (result.status === "complete") {
-          toast.success("Account created! Welcome to WatchReviews.");
-          setStep(auditBusiness ? "showcase" : "business");
-        } else {
+        const su = clerkSignUpAttempt as {
+          attemptEmailAddressVerification: (a: { code: string }) => Promise<{ status: string }>;
+          createdSessionId: string | null;
+        };
+        const result = await su.attemptEmailAddressVerification({ code: otpCode });
+        if (result.status !== "complete") {
           setOtpError("Verification incomplete — please try again.");
+          return;
         }
+        if (su.createdSessionId) {
+          await setActive({ session: su.createdSessionId });
+        }
+        await new Promise((r) => setTimeout(r, 150));
+        toast.success("Account created! Welcome to WatchReviews.");
+        setStep(auditBusiness ? "showcase" : "business");
+      } else {
+        setOtpError("Session expired — go back and request a new code.");
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Invalid code";
@@ -553,20 +650,27 @@ export default function FreeTrial() {
       }
       // Background: run full AI audit and save to DB
       setAuditRunning(true);
-      runAndSaveAuditMutation.mutateAsync({
-        placeId: biz.placeId,
-        businessName: biz.name,
-        businessCategory: biz.category ?? undefined,
-        businessAddress: biz.address ?? undefined,
-        email: email || undefined,
-      }).then((result) => {
-        setAuditSavedId(result.auditId);
-        setAuditRunning(false);
-        // Store audit context in sessionStorage for dashboard fallback
-        sessionStorage.setItem("ft_audit_id", String(result.auditId));
-      }).catch(() => {
-        setAuditRunning(false);
-      });
+      sessionStorage.setItem("ft_audit_saving", "1");
+      const uid =
+        meQuery.data?.id && meQuery.data.id > 0 ? meQuery.data.id : undefined;
+      runAndSaveAuditMutation
+        .mutateAsync({
+          placeId: biz.placeId,
+          businessName: biz.name,
+          businessCategory: biz.category ?? undefined,
+          businessAddress: biz.address ?? undefined,
+          email: email || undefined,
+          userId: uid,
+        })
+        .then((result) => {
+          setAuditSavedId(result.auditId);
+          sessionStorage.setItem("ft_audit_id", String(result.auditId));
+        })
+        .catch(() => {})
+        .finally(() => {
+          setAuditRunning(false);
+          sessionStorage.removeItem("ft_audit_saving");
+        });
       setStep("showcase");
     } catch {
       toast.error("Could not load reviews — please try again");
@@ -659,6 +763,12 @@ export default function FreeTrial() {
             : <>Let's Get Started <ChevronRight className="ml-2 h-5 w-5" /></>}
         </Button>
         {otpError && <p className="text-sm text-red-500 text-center">{otpError}</p>}
+        {hasAuditContext && (
+          <p className="text-xs text-slate-500 text-center max-w-sm mx-auto leading-relaxed">
+            If you already verified your email on the audit page, you stay signed in — we won&apos;t ask again.
+            Otherwise use the same email for a one-time sign-in code.
+          </p>
+        )}
         <p className="text-xs text-slate-400 text-center">No credit card required to start. 14-day free trial.</p>
       </div>
     </div>

@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -273,6 +273,10 @@ export default function Dashboard() {
   const responsesQuery = trpc.responses.list.useQuery({ limit: 50 }, { enabled: !!clientQuery.data });
   const utils = trpc.useUtils();
 
+  const [pollAuditSave, setPollAuditSave] = useState(
+    () => typeof window !== "undefined" && sessionStorage.getItem("ft_audit_saving") === "1"
+  );
+
   // Fetch saved audit — by userId if authenticated, else by email from profile or sessionStorage fallback
   const sessionEmail = typeof window !== "undefined" ? (sessionStorage.getItem("ft_email") ?? undefined) : undefined;
   const auditInput = useMemo(() => ({
@@ -284,7 +288,21 @@ export default function Dashboard() {
     // Always run if we have any identifier — real userId, account email, or sessionStorage email
     enabled: !!(auditInput.userId || auditInput.email),
     staleTime: 5 * 60 * 1000,
+    refetchInterval: pollAuditSave ? 2800 : false,
   });
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setPollAuditSave(sessionStorage.getItem("ft_audit_saving") === "1");
+    }, 1200);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    if (!auditQuery.data) return;
+    sessionStorage.removeItem("ft_audit_saving");
+    setPollAuditSave(false);
+  }, [auditQuery.data]);
 
   const pollNow = trpc.locations.pollNow.useMutation({
     onSuccess: () => {
@@ -398,6 +416,8 @@ export default function Dashboard() {
   // If no client record — show audit data if available, else setup prompt
   if (!clientQuery.data) {
     const savedAudit = auditQuery.data;
+    const auditWait =
+      auditQuery.isLoading || auditQuery.isFetching || pollAuditSave;
     return (
       <div className="min-h-screen bg-gray-50">
         <div className="flex h-screen overflow-hidden">
@@ -434,18 +454,22 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* Audit loading */}
-            {auditQuery.isLoading && (
+            {/* Audit loading / background save in progress */}
+            {auditWait && !savedAudit && (
               <div className="flex items-center justify-center py-16">
                 <div className="text-center">
                   <Loader2 className="w-8 h-8 animate-spin text-blue-600 mx-auto mb-3" />
-                  <p className="text-gray-500 text-sm">Loading your business audit...</p>
+                  <p className="text-gray-500 text-sm">
+                    {pollAuditSave && !auditQuery.isLoading
+                      ? "Saving your business report… this can take a minute."
+                      : "Loading your business audit..."}
+                  </p>
                 </div>
               </div>
             )}
 
             {/* Audit results */}
-            {savedAudit && !auditQuery.isLoading && (
+            {savedAudit && (
               <AuditResultsPanel
                 businessName={savedAudit.businessName}
                 analysis={savedAudit.analysis as AuditAnalysis}
@@ -454,7 +478,7 @@ export default function Dashboard() {
             )}
 
             {/* No audit yet */}
-            {!savedAudit && !auditQuery.isLoading && (
+            {!savedAudit && !auditWait && (
               <div className="max-w-lg mx-auto text-center pt-12">
                 <div className="w-16 h-16 bg-blue-100 rounded-2xl flex items-center justify-center mx-auto mb-6">
                   <Building2 className="w-8 h-8 text-blue-600" />
@@ -487,6 +511,8 @@ export default function Dashboard() {
   const pendingResponses = responses.filter((r) => r.response.status === "pending_approval");
   const postedResponses = responses.filter((r) => r.response.status === "posted");
   const savedAudit = auditQuery.data;
+  const auditWaitFull =
+    !savedAudit && (auditQuery.isLoading || auditQuery.isFetching || pollAuditSave);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -529,6 +555,17 @@ export default function Dashboard() {
                 </Link>
               </div>
             </div>
+
+            {auditWaitFull && (
+              <div className="flex items-center gap-3 rounded-xl border border-blue-100 bg-blue-50/80 px-4 py-3 mb-6 text-sm text-blue-900">
+                <Loader2 className="w-4 h-4 shrink-0 animate-spin text-blue-600" />
+                <span>
+                  {pollAuditSave
+                    ? "Saving your business report to your dashboard…"
+                    : "Loading your saved business audit…"}
+                </span>
+              </div>
+            )}
 
             {/* Audit Results (if available) */}
             {savedAudit && (
