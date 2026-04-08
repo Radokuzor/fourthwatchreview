@@ -549,6 +549,39 @@ export const appRouter = router({
         return { success: true };
       }),
 
+    /** After Clerk email OTP — save lead using authenticated user email (no app SMTP). */
+    syncHomeAuditLead: protectedProcedure
+      .input(
+        z.object({
+          businessName: z.string(),
+          placeId: z.string().optional(),
+          healthScore: z.number().optional(),
+          responseRate: z.number().optional(),
+          totalReviews: z.number().optional(),
+          averageRating: z.string().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const email = ctx.user?.email?.trim();
+        if (!email) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Missing email on account" });
+        }
+        const existing = await getAuditLeadByEmail(email);
+        if (!existing) {
+          await createAuditLead({
+            email,
+            businessName: input.businessName,
+            placeId: input.placeId,
+            healthScore: input.healthScore,
+            responseRate: input.responseRate,
+            totalReviews: input.totalReviews,
+            averageRating: input.averageRating,
+          });
+        }
+        await markAuditLeadVerified(email);
+        return { success: true };
+      }),
+
     capturePhone: publicProcedure
       .input(z.object({
         email: z.string().email(),

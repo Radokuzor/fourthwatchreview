@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useClerk, useSignIn, useSignUp, useUser } from "@clerk/clerk-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -98,7 +99,11 @@ function ScoreRing({ score, label, color }: { score: number; label: string; colo
 
 export default function Home() {
   const [, setLocation] = useLocation();
-  const { isAuthenticated, loading: authLoading, logout } = useAuth();
+  const { isAuthenticated, loading: authLoading, logout, user: authUser } = useAuth();
+  const { user: clerkUser, isSignedIn } = useUser();
+  const { setActive } = useClerk();
+  const { signIn, isLoaded: signInLoaded } = useSignIn();
+  const { signUp, isLoaded: signUpLoaded } = useSignUp();
   const [step, setStep] = useState<Step>("search");
   const [query, setQuery] = useState("");
   const [businesses, setBusinesses] = useState<BusinessResult[]>([]);
@@ -125,12 +130,28 @@ export default function Home() {
     },
     { enabled: false }
   );
-  const captureEmailMutation = trpc.audit.captureEmail.useMutation();
-  const verifyEmailMutation = trpc.audit.verifyEmail.useMutation();
+  const syncHomeAuditLeadMutation = trpc.audit.syncHomeAuditLead.useMutation();
   const capturePhoneMutation = trpc.audit.capturePhone.useMutation();
   const [otpCode, setOtpCode] = useState("");
   const [showOtpDialog, setShowOtpDialog] = useState(false);
+  const [otpFlow, setOtpFlow] = useState<"signIn" | "signUp" | null>(null);
+  const [clerkSignInAttempt, setClerkSignInAttempt] = useState<ReturnType<typeof useSignIn>["signIn"] | null>(null);
+  const [clerkSignUpAttempt, setClerkSignUpAttempt] = useState<ReturnType<typeof useSignUp>["signUp"] | null>(null);
+  const [otpSending, setOtpSending] = useState(false);
+  const [otpVerifying, setOtpVerifying] = useState(false);
+  const [otpError, setOtpError] = useState<string | null>(null);
   const generateDemoMutation = trpc.audit.generateDemoResponse.useMutation();
+
+  const clerkReady = signInLoaded && signUpLoaded && !!signIn && !!signUp;
+
+  /** Already signed in with Clerk — unlock report and sync email for downstream actions. */
+  useEffect(() => {
+    if (!isSignedIn || !clerkUser?.primaryEmailAddress?.emailAddress) return;
+    setEmail(clerkUser.primaryEmailAddress.emailAddress);
+    if (step === "audit" || step === "demo") {
+      setEmailCaptured(true);
+    }
+  }, [isSignedIn, clerkUser?.primaryEmailAddress?.emailAddress, step]);
 
   const handleSearch = async () => {
     if (query.trim().length < 2) return;
@@ -155,26 +176,121 @@ export default function Home() {
   };
 
   const handleEmailSubmit = async () => {
-    if (!email || !email.includes("@")) { toast.error("Please enter a valid email"); return; }
-    await captureEmailMutation.mutateAsync({
-      email, businessName: selectedBusiness?.name ?? "", placeId: selectedBusiness?.placeId,
-      healthScore: auditData?.metrics.healthScore, responseRate: auditData?.metrics.responseRate,
-      totalReviews: auditData?.metrics.totalReviews, averageRating: String(auditData?.metrics.averageRating ?? ""),
-    });
-    setShowEmailDialog(false);
-    setShowOtpDialog(true);
-    toast.success("Verification code sent! Check your email.");
+    if (!email || !email.includes("@")) {
+      toast.error("Please enter a valid email");
+      return;
+    }
+    setOtpError(null);
+    if (!import.meta.env.CLERK_PUBLISHABLE_KEY) {
+      toast.error("Authentication is not configured.");
+      return;
+    }
+    if (!clerkReady) {
+      toast.error("Authentication is still loading — please try again in a moment.");
+      return;
+    }
+    setOtpSending(true);
+    try {
+      const si = await signIn!.create({ identifier: email.trim(), strategy: "email_code" });
+      setClerkSignInAttempt(si as ReturnType<typeof useSignIn>["signIn"]);
+      setOtpFlow("signIn");
+      setShowEmailDialog(false);
+      setShowOtpDialog(true);
+      toast.success("Check your email — we sent a 6-digit code!");
+    } catch (err: unknown) {
+      const code = (err as { errors?: Array<{ code?: string }> })?.errors?.[0]?.code;
+      if (code === "form_identifier_not_found") {
+        try {
+          const su = await signUp!.create({ emailAddress: email.trim() });
+          await su.prepareEmailAddressVerification({ strategy: "email_code" });
+          setClerkSignUpAttempt(su as ReturnType<typeof useSignUp>["signUp"]);
+          setOtpFlow("signUp");
+          setShowEmailDialog(false);
+          setShowOtpDialog(true);
+          toast.success("Check your email — we sent a 6-digit code!");
+        } catch (err2: unknown) {
+          const msg = err2 instanceof Error ? err2.message : "Failed to send code";
+          setOtpError(msg);
+          toast.error(msg);
+        }
+      } else {
+        const msg = err instanceof Error ? err.message : "Failed to send code";
+        setOtpError(msg);
+        toast.error(msg);
+      }
+    } finally {
+      setOtpSending(false);
+    }
   };
 
   const handleOtpSubmit = async () => {
-    if (otpCode.length !== 6) { toast.error("Please enter the 6-digit code"); return; }
+    if (otpCode.length !== 6) {
+      toast.error("Please enter the 6-digit code");
+      return;
+    }
+    setOtpVerifying(true);
+    setOtpError(null);
     try {
-      await verifyEmailMutation.mutateAsync({ email, code: otpCode });
+      if (otpFlow === "signIn" && clerkSignInAttempt) {
+        const si = clerkSignInAttempt as {
+          attemptFirstFactor: (a: unknown) => Promise<{ status: string }>;
+          createdSessionId: string | null;
+        };
+        const result = await si.attemptFirstFactor({
+          strategy: "email_code",
+          code: otpCode,
+        });
+        if (result.status !== "complete") {
+          setOtpError("Verification incomplete — please try again.");
+          return;
+        }
+        if (si.createdSessionId) {
+          await setActive({ session: si.createdSessionId });
+        }
+      } else if (otpFlow === "signUp" && clerkSignUpAttempt) {
+        const su = clerkSignUpAttempt as {
+          attemptEmailAddressVerification: (a: { code: string }) => Promise<{ status: string }>;
+          createdSessionId: string | null;
+        };
+        const result = await su.attemptEmailAddressVerification({ code: otpCode });
+        if (result.status !== "complete") {
+          setOtpError("Verification incomplete — please try again.");
+          return;
+        }
+        if (su.createdSessionId) {
+          await setActive({ session: su.createdSessionId });
+        }
+      } else {
+        setOtpError("Session expired — please request a new code.");
+        return;
+      }
+
+      await new Promise((r) => setTimeout(r, 150));
+      try {
+        await syncHomeAuditLeadMutation.mutateAsync({
+          businessName: selectedBusiness?.name ?? "",
+          placeId: selectedBusiness?.placeId,
+          healthScore: auditData?.metrics.healthScore,
+          responseRate: auditData?.metrics.responseRate,
+          totalReviews: auditData?.metrics.totalReviews,
+          averageRating: String(auditData?.metrics.averageRating ?? ""),
+        });
+      } catch (syncErr) {
+        console.warn("[Home] syncHomeAuditLead:", syncErr);
+        toast.error("You're signed in, but we couldn't save your audit lead. Your report is still unlocked.");
+      }
+
+      setEmail(email.trim());
       setEmailCaptured(true);
       setShowOtpDialog(false);
-      toast.success("Email verified! Your full report is now unlocked.");
-    } catch {
-      toast.error("Invalid code. Please check your email and try again.");
+      toast.success("You're signed in! Your full report is now unlocked.");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Invalid code";
+      const friendly = msg.includes("incorrect") ? "Incorrect code — please check your email and try again." : msg;
+      setOtpError(friendly);
+      toast.error(friendly);
+    } finally {
+      setOtpVerifying(false);
     }
   };
 
@@ -185,7 +301,14 @@ export default function Home() {
 
   const handlePhoneSubmit = async () => {
     if (!phone || phone.replace(/\D/g, "").length < 10) { toast.error("Please enter a valid phone number"); return; }
-    await capturePhoneMutation.mutateAsync({ email, phone, businessName: selectedBusiness?.name ?? "", placeId: selectedBusiness?.placeId });
+    const contactEmail = authUser?.email ?? email;
+    if (!contactEmail?.includes("@")) { toast.error("Please verify your email first"); return; }
+    await capturePhoneMutation.mutateAsync({
+      email: contactEmail,
+      phone,
+      businessName: selectedBusiness?.name ?? "",
+      placeId: selectedBusiness?.placeId,
+    });
     setShowPhoneDialog(false);
     setDemoLoading(true);
     setStep("demo");
@@ -205,11 +328,12 @@ export default function Home() {
   const sendDetailedReportMutation = trpc.audit.sendDetailedReport.useMutation();
 
   const handleSendDetailedReport = async () => {
-    if (!email || !emailCaptured) { toast.error("Please verify your email first"); return; }
+    const reportEmail = authUser?.email ?? email;
+    if (!reportEmail || !emailCaptured) { toast.error("Please verify your email first"); return; }
     setSendingReport(true);
     try {
       await sendDetailedReportMutation.mutateAsync({
-        email,
+        email: reportEmail,
         businessName: selectedBusiness?.name ?? "",
         placeId: selectedBusiness?.placeId ?? "",
       });
@@ -389,7 +513,15 @@ export default function Home() {
                       <Lock className="h-8 w-8 text-blue-600 mx-auto mb-3" />
                       <h3 className="font-bold text-slate-900 mb-1">Unlock Your Full Report</h3>
                       <p className="text-sm text-slate-500 mb-4">Enter your email to see all metrics and pain points</p>
-                      <Button className="bg-blue-600 hover:bg-blue-700 text-white w-full" onClick={() => setShowEmailDialog(true)}>Unlock Free Report</Button>
+                      <Button
+                        className="bg-blue-600 hover:bg-blue-700 text-white w-full"
+                        onClick={() => {
+                          setOtpError(null);
+                          setShowEmailDialog(true);
+                        }}
+                      >
+                        Unlock Free Report
+                      </Button>
                     </div>
                   </div>
                 )}
@@ -651,8 +783,11 @@ export default function Home() {
               <Input type="email" placeholder="you@yourbusiness.com" value={email} onChange={(e) => setEmail(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleEmailSubmit()} className="border-2" />
             </div>
-            <Button className="w-full bg-blue-600 hover:bg-blue-700 text-white" onClick={handleEmailSubmit} disabled={captureEmailMutation.isPending}>
-              {captureEmailMutation.isPending ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Sending code...</> : <><Mail className="h-4 w-4 mr-2" />Send Verification Code</>}
+            {otpError && showEmailDialog && (
+              <p className="text-sm text-red-600 text-center">{otpError}</p>
+            )}
+            <Button className="w-full bg-blue-600 hover:bg-blue-700 text-white" onClick={handleEmailSubmit} disabled={otpSending}>
+              {otpSending ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Sending code...</> : <><Mail className="h-4 w-4 mr-2" />Send Verification Code</>}
             </Button>
             <p className="text-xs text-slate-400 text-center">We respect your privacy. No spam, ever.</p>
           </div>
@@ -674,11 +809,27 @@ export default function Home() {
                 onKeyDown={(e) => e.key === "Enter" && handleOtpSubmit()}
                 className="border-2 text-center text-2xl tracking-widest font-mono" />
             </div>
-            <Button className="w-full bg-blue-600 hover:bg-blue-700 text-white" onClick={handleOtpSubmit} disabled={verifyEmailMutation.isPending}>
-              {verifyEmailMutation.isPending ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Verifying...</> : <><CheckCircle2 className="h-4 w-4 mr-2" />Verify & Unlock Report</>}
+            {otpError && (
+              <p className="text-sm text-red-600 text-center">{otpError}</p>
+            )}
+            <Button className="w-full bg-blue-600 hover:bg-blue-700 text-white" onClick={handleOtpSubmit} disabled={otpVerifying}>
+              {otpVerifying ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Verifying...</> : <><CheckCircle2 className="h-4 w-4 mr-2" />Verify & Unlock Report</>}
             </Button>
-            <button onClick={() => { setShowOtpDialog(false); setShowEmailDialog(true); }}
-              className="text-xs text-blue-600 hover:underline w-full text-center">Didn't get the code? Resend</button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowOtpDialog(false);
+                setShowEmailDialog(true);
+                setOtpCode("");
+                setOtpError(null);
+                setClerkSignInAttempt(null);
+                setClerkSignUpAttempt(null);
+                setOtpFlow(null);
+              }}
+              className="text-xs text-blue-600 hover:underline w-full text-center"
+            >
+              Didn&apos;t get the code? Resend
+            </button>
           </div>
         </DialogContent>
       </Dialog>
