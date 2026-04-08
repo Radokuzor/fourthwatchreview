@@ -109,7 +109,7 @@ export async function searchBusinesses(query: string): Promise<BusinessResult[]>
     }
 
     const results: BusinessResult[] = [];
-    for (const item of rawResults.slice(0, 6)) {
+    for (const item of rawResults.slice(0, 15)) {
       const placeId = item.data_id ?? item.place_id ?? "";
       if (!placeId) continue;
       results.push({
