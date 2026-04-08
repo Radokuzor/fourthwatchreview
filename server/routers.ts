@@ -9,6 +9,7 @@ import {
   markAuditLeadVerified,
   createClient,
   createLocation,
+  deleteAccountDataForUser,
   deleteLocation,
   getAllClients,
   getAllReviewsForAdmin,
@@ -57,6 +58,7 @@ async function sendEmail({ to, subject, html }: { to: string; subject: string; h
   await transporter.sendMail({ from: process.env.SMTP_USER, to, subject, html });
 }
 import { invokeLLM } from "./_core/llm";
+import { ENV } from "./_core/env";
 
 // ─── Admin guard ──────────────────────────────────────────────────────────────
 const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
@@ -78,6 +80,25 @@ export const appRouter = router({
   auth: router({
     me: publicProcedure.query((opts) => opts.ctx.user),
     logout: publicProcedure.mutation(() => {
+      return { success: true } as const;
+    }),
+
+    deleteAccount: protectedProcedure.mutation(async ({ ctx }) => {
+      if (ctx.user.clerkId === ENV.ownerClerkUserId && ENV.ownerClerkUserId) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "This account cannot be deleted from the app.",
+        });
+      }
+      await deleteAccountDataForUser({
+        userId: ctx.user.id,
+        email: ctx.user.email ?? null,
+      });
+      if (ENV.clerkSecretKey) {
+        const { createClerkClient } = await import("@clerk/backend");
+        const clerk = createClerkClient({ secretKey: ENV.clerkSecretKey });
+        await clerk.users.deleteUser(ctx.user.clerkId);
+      }
       return { success: true } as const;
     }),
   }),

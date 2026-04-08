@@ -1,13 +1,16 @@
-import { and, desc, eq, isNull, lt } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   InsertUser,
   approvalTokens,
+  auditLeads,
   brandTemplates,
   clients,
+  demoApprovals,
   locations,
   reviewResponses,
   reviews,
+  userAudits,
   users,
   type InsertApprovalToken,
   type InsertBrandTemplate,
@@ -420,4 +423,47 @@ export async function linkAuditToUser(email: string, userId: number) {
     .update(userAudits)
     .set({ userId })
     .where(eq(userAudits.email, email));
+}
+
+/** Hard-delete all app data for a user (locations, reviews, client, audits, leads). Caller deletes Clerk user after. */
+export async function deleteAccountDataForUser(opts: {
+  userId: number;
+  email: string | null;
+}): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("DB unavailable");
+
+  const client = await getClientByUserId(opts.userId);
+  if (client) {
+    const locRows = await db.select({ id: locations.id }).from(locations).where(eq(locations.clientId, client.id));
+    const locIds = locRows.map((l) => l.id);
+    if (locIds.length > 0) {
+      const revRows = await db.select({ id: reviews.id }).from(reviews).where(inArray(reviews.locationId, locIds));
+      const revIds = revRows.map((r) => r.id);
+      if (revIds.length > 0) {
+        const respRows = await db
+          .select({ id: reviewResponses.id })
+          .from(reviewResponses)
+          .where(inArray(reviewResponses.reviewId, revIds));
+        const respIds = respRows.map((r) => r.id);
+        if (respIds.length > 0) {
+          await db.delete(approvalTokens).where(inArray(approvalTokens.reviewResponseId, respIds));
+        }
+        await db.delete(reviewResponses).where(inArray(reviewResponses.reviewId, revIds));
+        await db.delete(reviews).where(inArray(reviews.id, revIds));
+      }
+      await db.delete(locations).where(inArray(locations.id, locIds));
+    }
+    await db.delete(brandTemplates).where(eq(brandTemplates.clientId, client.id));
+    await db.delete(clients).where(eq(clients.id, client.id));
+  }
+
+  await db.delete(userAudits).where(eq(userAudits.userId, opts.userId));
+  if (opts.email) {
+    await db.delete(userAudits).where(eq(userAudits.email, opts.email));
+    await db.delete(auditLeads).where(eq(auditLeads.email, opts.email));
+    await db.delete(demoApprovals).where(eq(demoApprovals.email, opts.email));
+  }
+
+  await db.delete(users).where(eq(users.id, opts.userId));
 }

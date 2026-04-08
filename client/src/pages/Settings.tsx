@@ -8,12 +8,35 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import { Link } from "wouter";
-import { ArrowLeft, Bell, Mail, MessageCircle, Save, Info } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { buttonVariants } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { ArrowLeft, Bell, Mail, MessageCircle, Save, Info, Trash2 } from "lucide-react";
 
 export default function Settings() {
-  const { isAuthenticated, loading } = useAuth();
+  const { isAuthenticated, loading, logout } = useAuth();
   const clientQuery = trpc.clients.me.useQuery();
   const utils = trpc.useUtils();
+
+  const deleteAccount = trpc.auth.deleteAccount.useMutation({
+    onSuccess: async () => {
+      toast.success("Your account has been deleted.");
+      await logout();
+    },
+    onError: (err) => {
+      toast.error(err.message || "Could not delete account");
+    },
+  });
 
   const updateClient = trpc.clients.update.useMutation({
     onSuccess: () => {
@@ -208,6 +231,44 @@ export default function Settings() {
               {updateClient.isPending ? "Saving..." : "Save all settings"}
             </Button>
           </div>
+
+          <Card className="border-red-200 bg-red-50/40">
+            <CardHeader>
+              <CardTitle className="text-base text-red-900">Danger zone</CardTitle>
+              <CardDescription className="text-red-800/80">
+                Permanently delete your ReviewPilot account, business data, saved audits, and your login. This cannot
+                be undone.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button type="button" variant="destructive" disabled={deleteAccount.isPending}>
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    {deleteAccount.isPending ? "Deleting…" : "Delete my account"}
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Delete your account?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      We will remove your profile, locations, reviews, brand settings, and marketing lead data tied to
+                      this account, then sign you out. Your Clerk login will also be removed if configured.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      className={cn(buttonVariants({ variant: "destructive" }))}
+                      onClick={() => deleteAccount.mutate()}
+                    >
+                      Yes, delete everything
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            </CardContent>
+          </Card>
         </div>
       </div>
     </div>
