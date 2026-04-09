@@ -12,6 +12,8 @@ export default function SignInPage() {
         }}
         routing="hash"
         signUpUrl="/free-trial"
+        fallbackRedirectUrl="/"
+        signUpFallbackRedirectUrl="/free-trial"
       />
     </div>
   );

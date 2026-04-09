@@ -480,6 +480,7 @@ export default function FreeTrial() {
   const syncHomeAuditLeadMutation = trpc.audit.syncHomeAuditLead.useMutation();
   const utils = trpc.useUtils();
   const persistAuditFromHomeRef = useRef(false);
+  const emailDialogTimerRef = useRef<number | null>(null);
   const pollStatusQuery = trpc.onboarding.pollDemoStatus.useQuery(
     { token: demoToken ?? "" },
     { enabled: !!demoToken && step === "waiting", refetchInterval: 3000 }
@@ -503,6 +504,10 @@ export default function FreeTrial() {
 
   // Cleanup polling on unmount
   useEffect(() => () => { if (pollingRef.current) clearInterval(pollingRef.current); }, []);
+
+  useEffect(() => () => {
+    if (emailDialogTimerRef.current) clearTimeout(emailDialogTimerRef.current);
+  }, []);
 
   useEffect(() => {
     if (!isSignedIn) persistAuditFromHomeRef.current = false;
@@ -693,6 +698,7 @@ export default function FreeTrial() {
     await new Promise((r) => setTimeout(r, 150));
     const trimmed = email.trim();
     sessionStorage.setItem("ft_email", trimmed);
+    await utils.auth.me.invalidate();
 
     if (auditReportData && selectedBusiness) {
       try {
@@ -784,6 +790,10 @@ export default function FreeTrial() {
   };
 
   const handleSelectBusiness = async (biz: BusinessResult) => {
+    if (emailDialogTimerRef.current) {
+      clearTimeout(emailDialogTimerRef.current);
+      emailDialogTimerRef.current = null;
+    }
     setSelectedBusiness(biz);
     setEmailCaptured(Boolean(isSignedIn));
     setAuditReportData(null);
@@ -849,7 +859,10 @@ export default function FreeTrial() {
 
       setStep("audit-report");
       if (!isSignedIn) {
-        window.setTimeout(() => setShowEmailDialog(true), 2000);
+        emailDialogTimerRef.current = window.setTimeout(() => {
+          emailDialogTimerRef.current = null;
+          setShowEmailDialog(true);
+        }, 2000);
       }
     } catch {
       toast.error("Could not run your audit — please try again");
@@ -926,77 +939,21 @@ export default function FreeTrial() {
         ))}
       </div>
       <div className="space-y-3 max-w-sm mx-auto">
-        <label className="text-sm font-medium text-slate-700 block text-left">Your email address</label>
-        <Input
-          type="email"
-          placeholder="you@yourbusiness.com"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && email.includes("@") && handleSendOtp()}
-          className="border-2 text-base py-5"
-        />
         <Button
           size="lg"
           className="w-full bg-blue-600 hover:bg-blue-700 text-white text-base py-6"
-          disabled={!email.includes("@") || otpSending}
-          onClick={handleSendOtp}
+          onClick={() => setStep("business")}
         >
-          {otpSending
-            ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Sending code...</>
-            : <>Let's Get Started <ChevronRight className="ml-2 h-5 w-5" /></>}
+          Find my business & run free analysis <ChevronRight className="ml-2 h-5 w-5" />
         </Button>
-        {otpError && <p className="text-sm text-red-500 text-center">{otpError}</p>}
+        <p className="text-xs text-slate-400 text-center">
+          We&apos;ll analyze your Google reviews first, then ask for your email to unlock the full report and create your account. No credit card required. 14-day free trial.
+        </p>
         {hasAuditContext && (
-          <p className="text-xs text-slate-500 text-center max-w-sm mx-auto leading-relaxed">
-            If you already verified your email on the audit page, you stay signed in — we won&apos;t ask again.
-            Otherwise use the same email for a one-time sign-in code.
+          <p className="text-xs text-slate-500 text-center leading-relaxed">
+            Already verified on the homepage audit? Stay signed in — you&apos;ll skip the email step.
           </p>
         )}
-        <p className="text-xs text-slate-400 text-center">No credit card required to start. 14-day free trial.</p>
-      </div>
-    </div>
-  );
-
-  const renderOtp = () => (
-    <div className="space-y-8 text-center max-w-sm mx-auto">
-      <div className="flex justify-center">
-        <div className="w-16 h-16 bg-blue-100 rounded-2xl flex items-center justify-center">
-          <Mail className="h-8 w-8 text-blue-600" />
-        </div>
-      </div>
-      <div>
-        <h2 className="text-3xl font-bold text-slate-900 mb-2">Check your email</h2>
-        <p className="text-slate-500">We sent a 6-digit code to <strong>{email}</strong>. Enter it below to {otpFlow === "signUp" ? "create your account" : "sign in"}.</p>
-      </div>
-      <div className="space-y-4">
-        <Input
-          type="text"
-          inputMode="numeric"
-          maxLength={6}
-          placeholder="000000"
-          value={otpCode}
-          onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-          onKeyDown={(e) => e.key === "Enter" && otpCode.length === 6 && handleVerifyOtp()}
-          className="border-2 text-center text-3xl tracking-[0.5em] font-mono py-6"
-          autoFocus
-        />
-        {otpError && <p className="text-sm text-red-500">{otpError}</p>}
-        <Button
-          size="lg"
-          className="w-full bg-blue-600 hover:bg-blue-700 text-white text-base py-6"
-          disabled={otpCode.length < 6 || otpVerifying}
-          onClick={handleVerifyOtp}
-        >
-          {otpVerifying
-            ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Verifying...</>
-            : <><CheckCircle2 className="h-4 w-4 mr-2" />Verify & Continue</>}
-        </Button>
-        <button
-          onClick={() => { setOtpCode(""); setOtpError(null); handleSendOtp(); }}
-          className="text-sm text-slate-400 hover:text-blue-600 transition-colors underline underline-offset-2"
-        >
-          Resend code
-        </button>
       </div>
     </div>
   );
@@ -1059,6 +1016,162 @@ export default function FreeTrial() {
       )}
     </div>
   );
+
+  const renderAuditLoading = () => (
+    <div className="text-center py-16 space-y-4">
+      <Loader2 className="h-12 w-12 text-blue-600 animate-spin mx-auto" />
+      <h2 className="text-2xl font-bold text-slate-900">Running Business Forensic Analysis</h2>
+      <p className="text-slate-500">
+        Analyzing <span className="font-semibold text-blue-600">{selectedBusiness?.name}</span>
+      </p>
+    </div>
+  );
+
+  const renderAuditReport = () => {
+    if (!auditReportData || !selectedBusiness) {
+      return (
+        <div className="text-center py-12 space-y-4">
+          <p className="text-slate-500 text-sm">No report data.</p>
+          <Button variant="outline" onClick={() => setStep("business")}>Back to business search</Button>
+        </div>
+      );
+    }
+    const { metrics, analysis } = auditReportData;
+
+    return (
+      <div className="space-y-6">
+        <div className="text-center">
+          <h2 className="text-2xl font-bold text-slate-900">Business Forensic Report</h2>
+          <p className="text-slate-500 text-sm mt-1">{selectedBusiness.name}</p>
+        </div>
+
+        <div className="bg-white rounded-2xl border-2 border-slate-100 p-4 shadow-sm">
+          <div className="flex justify-around">
+            <ScoreRing score={metrics.healthScore} label="Business Health" color="#3b82f6" />
+            <ScoreRing score={metrics.sentimentScore} label="Customer Sentiment" color="#8b5cf6" />
+            <ScoreRing score={metrics.responseRate} label="Response Rate" color="#10b981" />
+          </div>
+        </div>
+
+        <div className="relative mb-2">
+          <div className={`grid grid-cols-2 gap-3 ${!emailCaptured ? "blur-sm pointer-events-none select-none" : ""}`}>
+            <div className="bg-white rounded-xl border border-slate-100 p-3 shadow-sm">
+              <div className="flex items-center gap-2 text-slate-500 text-xs mb-1"><MessageSquare className="h-3.5 w-3.5" /> Total Reviews</div>
+              <div className="text-xl font-bold text-slate-900">{metrics.totalReviews}</div>
+            </div>
+            <div className="bg-white rounded-xl border border-slate-100 p-3 shadow-sm">
+              <div className="flex items-center gap-2 text-slate-500 text-xs mb-1"><Star className="h-3.5 w-3.5" /> Avg Rating</div>
+              <div className="text-xl font-bold text-slate-900">{metrics.averageRating} ⭐</div>
+            </div>
+            <div className="bg-white rounded-xl border border-slate-100 p-3 shadow-sm">
+              <div className="flex items-center gap-2 text-amber-500 text-xs mb-1"><AlertCircle className="h-3.5 w-3.5" /> Unanswered</div>
+              <div className="text-xl font-bold text-amber-600">{metrics.unansweredCount}</div>
+            </div>
+            <div className="bg-white rounded-xl border border-slate-100 p-3 shadow-sm">
+              <div className="flex items-center gap-2 text-slate-500 text-xs mb-1"><TrendingUp className="h-3.5 w-3.5" /> Velocity</div>
+              <div className="text-xs font-semibold text-slate-900">{metrics.reviewVelocity}</div>
+            </div>
+          </div>
+          {!emailCaptured && (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="bg-white/95 backdrop-blur rounded-2xl p-5 shadow-xl border border-blue-100 text-center max-w-xs mx-2">
+                <Lock className="h-7 w-7 text-blue-600 mx-auto mb-2" />
+                <h3 className="font-bold text-slate-900 mb-1">Unlock your full report</h3>
+                <p className="text-xs text-slate-500 mb-3">Verify your email to see pain points, competitor gaps, and actions.</p>
+                <Button
+                  className="bg-blue-600 hover:bg-blue-700 text-white w-full"
+                  onClick={() => {
+                    setOtpError(null);
+                    setShowEmailDialog(true);
+                  }}
+                >
+                  Unlock free report
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {emailCaptured && (
+          <>
+            <div className="grid grid-cols-1 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="bg-red-50 rounded-xl border border-red-100 p-3">
+                  <h3 className="font-semibold text-red-800 text-sm mb-2 flex items-center gap-2"><AlertCircle className="h-4 w-4" /> Pain points</h3>
+                  <ul className="space-y-1">{analysis.painPoints.map((p, i) => <li key={i} className="text-xs text-red-700">• {p}</li>)}</ul>
+                </div>
+                <div className="bg-emerald-50 rounded-xl border border-emerald-100 p-3">
+                  <h3 className="font-semibold text-emerald-800 text-sm mb-2 flex items-center gap-2"><CheckCircle2 className="h-4 w-4" /> What customers love</h3>
+                  <ul className="space-y-1">{analysis.topPraises.map((p, i) => <li key={i} className="text-xs text-emerald-700">• {p}</li>)}</ul>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="bg-violet-50 rounded-xl border border-violet-100 p-3">
+                  <h3 className="font-semibold text-violet-800 text-sm mb-2 flex items-center gap-2"><Shield className="h-4 w-4" /> Staff signals</h3>
+                  {analysis.staffSignals.length === 0 ? (
+                    <p className="text-xs text-violet-600">No specific staff mentions.</p>
+                  ) : (
+                    <ul className="space-y-1 text-xs text-violet-700">
+                      {analysis.staffSignals.map((s, i) => (
+                        <li key={i}>{s.sentiment === "positive" ? "+" : "−"} {s.name} — {s.context}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <div className="bg-amber-50 rounded-xl border border-amber-100 p-3">
+                  <h3 className="font-semibold text-amber-800 text-sm mb-2 flex items-center gap-2"><Clock className="h-4 w-4" /> Operations</h3>
+                  {analysis.operationalIssues.length === 0 ? (
+                    <p className="text-xs text-amber-600">No major operational flags.</p>
+                  ) : (
+                    <ul className="space-y-1">{analysis.operationalIssues.map((o, i) => <li key={i} className="text-xs text-amber-700">⚠ {o}</li>)}</ul>
+                  )}
+                </div>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="bg-white rounded-xl border border-slate-100 p-3 shadow-sm">
+                  <h3 className="font-semibold text-slate-800 text-sm mb-2 flex items-center gap-2"><TrendingUp className="h-4 w-4 text-blue-600" /> Sentiment trend</h3>
+                  <p className="text-xs text-slate-500">{analysis.sentimentTrend.summary}</p>
+                </div>
+                <div className="bg-blue-50 rounded-xl border border-blue-100 p-3">
+                  <h3 className="font-semibold text-blue-800 text-sm mb-2 flex items-center gap-2"><BarChart3 className="h-4 w-4" /> Competitor gap</h3>
+                  {(analysis.competitorKeywordGap ?? []).length === 0 ? (
+                    <p className="text-xs text-blue-600">{metrics.competitorBenchmark || "Benchmarks loading…"}</p>
+                  ) : (
+                    <ul className="space-y-1">{(analysis.competitorKeywordGap ?? []).map((g, i) => <li key={i} className="text-xs text-blue-700">→ {g}</li>)}</ul>
+                  )}
+                </div>
+              </div>
+              <div className="bg-gradient-to-r from-slate-900 to-blue-900 rounded-xl p-4 text-white">
+                <div className="flex items-start gap-2">
+                  <Zap className="h-5 w-5 text-blue-300 shrink-0 mt-0.5" />
+                  <div>
+                    <h3 className="font-bold text-sm mb-1">Do this now</h3>
+                    <ul className="space-y-1">{(analysis.doThisNow ?? []).map((item, i) => <li key={i} className="text-blue-100 text-xs">→ {item}</li>)}</ul>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <Button size="lg" className="w-full bg-blue-600 hover:bg-blue-700 text-white text-base py-6" onClick={() => setStep("showcase")}>
+              Continue <ChevronRight className="ml-2 h-5 w-5" />
+            </Button>
+          </>
+        )}
+
+        <button
+          type="button"
+          onClick={() => {
+            setAuditReportData(null);
+            setEmailCaptured(false);
+            setStep("business");
+          }}
+          className="w-full text-center text-sm text-slate-400 hover:text-slate-600"
+        >
+          Choose a different business
+        </button>
+      </div>
+    );
+  };
 
   const renderShowcase = () => {
     const svc = SERVICES[serviceIdx];
@@ -1466,8 +1579,9 @@ export default function FreeTrial() {
 
   const STEP_RENDERERS: Record<OnboardingStep, () => React.ReactElement> = {
     welcome: renderWelcome,
-    otp: renderOtp,
     business: renderBusiness,
+    "audit-loading": renderAuditLoading,
+    "audit-report": renderAuditReport,
     showcase: renderShowcase,
     "brand-voice": renderBrandVoice,
     "demo-review": renderDemoReview,
@@ -1491,10 +1605,89 @@ export default function FreeTrial() {
       </nav>
 
       {/* Content */}
-      <div className="max-w-xl mx-auto px-6 py-10">
+      <div
+        className={`mx-auto px-6 py-10 ${
+          step === "audit-report" || step === "audit-loading" ? "max-w-2xl" : "max-w-xl"
+        }`}
+      >
         <ProgressBar step={step} />
         {STEP_RENDERERS[step]()}
       </div>
+
+      <Dialog open={showEmailDialog} onOpenChange={setShowEmailDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-xl">Unlock your full business report</DialogTitle>
+            <DialogDescription className="text-slate-500">
+              We&apos;ll send a verification code to confirm you&apos;re a real business owner. This creates your WatchReviews account.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 mt-2">
+            <div>
+              <label className="text-sm font-medium text-slate-700 mb-1.5 block">Business email</label>
+              <Input
+                type="email"
+                placeholder="you@yourbusiness.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSendOtp()}
+                className="border-2"
+              />
+            </div>
+            {otpError && showEmailDialog && <p className="text-sm text-red-600 text-center">{otpError}</p>}
+            <Button className="w-full bg-blue-600 hover:bg-blue-700 text-white" onClick={handleSendOtp} disabled={otpSending}>
+              {otpSending ? (
+                <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Sending code...</>
+              ) : (
+                <><Mail className="h-4 w-4 mr-2" />Send verification code</>
+              )}
+            </Button>
+            <p className="text-xs text-slate-400 text-center">No spam. Unsubscribe anytime.</p>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showOtpDialog} onOpenChange={setShowOtpDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-xl">Enter your verification code</DialogTitle>
+            <DialogDescription className="text-slate-500">
+              We sent a 6-digit code to <strong>{email}</strong>. Enter it below to unlock your report.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 mt-2">
+            <Input
+              type="text"
+              inputMode="numeric"
+              maxLength={6}
+              placeholder="123456"
+              value={otpCode}
+              onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              onKeyDown={(e) => e.key === "Enter" && otpCode.length === 6 && handleVerifyOtp()}
+              className="border-2 text-center text-2xl tracking-widest font-mono"
+            />
+            {otpError && <p className="text-sm text-red-600 text-center">{otpError}</p>}
+            <Button className="w-full bg-blue-600 hover:bg-blue-700 text-white" onClick={handleVerifyOtp} disabled={otpVerifying}>
+              {otpVerifying ? (
+                <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Verifying...</>
+              ) : (
+                <><CheckCircle2 className="h-4 w-4 mr-2" />Verify and unlock</>
+              )}
+            </Button>
+            <button
+              type="button"
+              onClick={() => {
+                setOtpCode("");
+                setOtpError(null);
+                void handleSendOtp();
+              }}
+              className="text-xs text-blue-600 hover:underline w-full text-center"
+            >
+              Resend code
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
