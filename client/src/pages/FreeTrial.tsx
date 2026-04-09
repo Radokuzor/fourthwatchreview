@@ -3,13 +3,14 @@ import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 import {
   ChevronRight, Search, Loader2, Star, CheckCircle2, Eye,
   MessageSquare, TrendingUp, Zap, BarChart3, Shield, Phone,
   Mail, CreditCard, Check, Crown, ArrowRight, ThumbsUp, ThumbsDown,
-  Sparkles, Volume2, Target, Heart
+  Sparkles, Volume2, Target, Heart, Lock, AlertCircle, Clock,
 } from "lucide-react";
 import { loadStripe } from "@stripe/stripe-js";
 import { Elements, CardElement, useStripe, useElements } from "@stripe/react-stripe-js";
@@ -18,8 +19,9 @@ import { useClerk, useSignIn, useSignUp, useUser } from "@clerk/clerk-react";
 // ─── Types ────────────────────────────────────────────────────────────────────
 type OnboardingStep =
   | "welcome"
-  | "otp"
   | "business"
+  | "audit-loading"
+  | "audit-report"
   | "showcase"
   | "brand-voice"
   | "demo-review"
@@ -106,6 +108,50 @@ const PLANS: Plan[] = [
 /** Must match Home.tsx — JSON snapshot from getAuditData for same business */
 const FT_HOME_AUDIT_SNAPSHOT_KEY = "ft_home_audit_snapshot";
 
+type AuditMetrics = {
+  totalReviews: number;
+  averageRating: number;
+  responseRate: number;
+  unansweredCount: number;
+  sentimentScore: number;
+  healthScore: number;
+  reviewVelocity: string;
+  competitorBenchmark: string;
+};
+
+type StaffSignal = { name: string; sentiment: "positive" | "negative"; mentions: number; context: string };
+type AuditAnalysis = {
+  painPoints: string[];
+  topPraises: string[];
+  staffSignals: StaffSignal[];
+  operationalIssues: string[];
+  doThisNow: string[];
+  sentimentTrend: { oldestFour: number; newestFour: number; direction: "improving" | "declining" | "stable"; summary: string };
+  competitorKeywordGap: string[];
+};
+
+function ScoreRing({ score, label, color }: { score: number; label: string; color: string }) {
+  const radius = 32;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference - (score / 100) * circumference;
+  return (
+    <div className="flex flex-col items-center gap-2">
+      <div className="relative w-20 h-20">
+        <svg className="w-20 h-20 -rotate-90" viewBox="0 0 80 80">
+          <circle cx="40" cy="40" r={radius} fill="none" stroke="#e2e8f0" strokeWidth="8" />
+          <circle cx="40" cy="40" r={radius} fill="none" stroke={color} strokeWidth="8"
+            strokeDasharray={circumference} strokeDashoffset={offset} strokeLinecap="round"
+            style={{ transition: "stroke-dashoffset 1s ease" }} />
+        </svg>
+        <div className="absolute inset-0 flex items-center justify-center">
+          <span className="text-xl font-bold text-slate-900">{score}</span>
+        </div>
+      </div>
+      <span className="text-xs font-medium text-slate-500 text-center">{label}</span>
+    </div>
+  );
+}
+
 const SERVICES = [
   { icon: BarChart3, color: "bg-blue-500", title: "Business Audit", desc: "Deep forensic scan of your Google presence — health score, response rate, and revenue gaps." },
   { icon: TrendingUp, color: "bg-violet-500", title: "Sentiment Analysis", desc: "Track how customer feelings shift over time. Spot problems before they become crises." },
@@ -163,7 +209,19 @@ function Stars({ rating }: { rating: number }) {
 }
 
 // ─── Progress bar ─────────────────────────────────────────────────────────────
-const STEP_ORDER: OnboardingStep[] = ["welcome", "otp", "business", "showcase", "brand-voice", "demo-review", "phone", "waiting", "plan", "payment"];
+const STEP_ORDER: OnboardingStep[] = [
+  "welcome",
+  "business",
+  "audit-loading",
+  "audit-report",
+  "showcase",
+  "brand-voice",
+  "demo-review",
+  "phone",
+  "waiting",
+  "plan",
+  "payment",
+];
 
 function ProgressBar({ step }: { step: OnboardingStep }) {
   const idx = STEP_ORDER.indexOf(step);
@@ -377,6 +435,10 @@ export default function FreeTrial() {
   const [selectedPlan, setSelectedPlan] = useState<"entry" | "basic" | "legendary">("basic");
   const [trialComplete, setTrialComplete] = useState(false);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [auditReportData, setAuditReportData] = useState<{ metrics: AuditMetrics; analysis: AuditAnalysis } | null>(null);
+  const [emailCaptured, setEmailCaptured] = useState(false);
+  const [showEmailDialog, setShowEmailDialog] = useState(false);
+  const [showOtpDialog, setShowOtpDialog] = useState(false);
 
   // OTP state
   const [otpCode, setOtpCode] = useState("");
@@ -415,6 +477,8 @@ export default function FreeTrial() {
   const runAndSaveAuditMutation = trpc.onboarding.runAndSaveAudit.useMutation();
   const saveHomeAuditSnapshotMutation = trpc.onboarding.saveHomeAuditSnapshot.useMutation();
   const promoActivateMutation = trpc.onboarding.promoActivate.useMutation();
+  const syncHomeAuditLeadMutation = trpc.audit.syncHomeAuditLead.useMutation();
+  const utils = trpc.useUtils();
   const persistAuditFromHomeRef = useRef(false);
   const pollStatusQuery = trpc.onboarding.pollDemoStatus.useQuery(
     { token: demoToken ?? "" },
@@ -444,15 +508,24 @@ export default function FreeTrial() {
     if (!isSignedIn) persistAuditFromHomeRef.current = false;
   }, [isSignedIn]);
 
-  // If already signed in, skip OTP and welcome (no second account flow after Home audit + OTP)
+  // Signed-in users skip welcome (Home handoff → showcase; cold start → business)
   useEffect(() => {
     if (!isSignedIn) return;
-    if (step === "otp") {
-      setStep(hasAuditContext ? "showcase" : "business");
-    } else if (step === "welcome") {
+    if (step === "welcome") {
       setStep(hasAuditContext ? "showcase" : "business");
     }
   }, [isSignedIn, step, hasAuditContext]);
+
+  // Already verified with Clerk — unlock audit report without a second OTP
+  useEffect(() => {
+    if (!isSignedIn || !clerkUser?.primaryEmailAddress?.emailAddress) return;
+    setEmail(clerkUser.primaryEmailAddress.emailAddress);
+    if (step === "audit-report") {
+      setShowEmailDialog(false);
+      setShowOtpDialog(false);
+      setEmailCaptured(true);
+    }
+  }, [isSignedIn, clerkUser?.primaryEmailAddress?.emailAddress, step]);
 
   // Persist full audit to user_audits when user arrived from Home with business context (skips business step)
   useEffect(() => {
@@ -561,7 +634,7 @@ export default function FreeTrial() {
 
   const clerkReady = signInLoaded && signUpLoaded && !!signIn && !!signUp;
 
-  // OTP: Send code (Clerk email code) ───────────────────────────────────────
+  // OTP: Send code (Clerk email code) — used from dialogs on audit-report only
   const handleSendOtp = async () => {
     if (!email.includes("@")) return;
     setOtpSending(true);
@@ -569,7 +642,11 @@ export default function FreeTrial() {
 
     if (!import.meta.env.CLERK_PUBLISHABLE_KEY) {
       setOtpSending(false);
-      setStep(hasAuditContext ? "showcase" : "business");
+      setEmailCaptured(true);
+      setShowEmailDialog(false);
+      setShowOtpDialog(false);
+      sessionStorage.setItem("ft_email", email.trim());
+      toast.success("Development mode: verification skipped.");
       return;
     }
 
@@ -584,7 +661,8 @@ export default function FreeTrial() {
       setClerkSignInAttempt(si as ReturnType<typeof useSignIn>["signIn"]);
       setOtpFlow("signIn");
       setOtpSending(false);
-      setStep("otp");
+      setShowEmailDialog(false);
+      setShowOtpDialog(true);
       toast.success("Check your email — we sent a 6-digit code!");
     } catch (err: unknown) {
       const code = (err as { errors?: Array<{ code?: string }> })?.errors?.[0]?.code;
@@ -595,7 +673,8 @@ export default function FreeTrial() {
           setClerkSignUpAttempt(su as ReturnType<typeof useSignUp>["signUp"]);
           setOtpFlow("signUp");
           setOtpSending(false);
-          setStep("otp");
+          setShowEmailDialog(false);
+          setShowOtpDialog(true);
           toast.success("Check your email — we sent a 6-digit code!");
         } catch (err2: unknown) {
           const msg = err2 instanceof Error ? err2.message : "Failed to send code";
@@ -608,6 +687,42 @@ export default function FreeTrial() {
         setOtpSending(false);
       }
     }
+  };
+
+  const finishOtpUnlock = async () => {
+    await new Promise((r) => setTimeout(r, 150));
+    const trimmed = email.trim();
+    sessionStorage.setItem("ft_email", trimmed);
+
+    if (auditReportData && selectedBusiness) {
+      try {
+        await syncHomeAuditLeadMutation.mutateAsync({
+          businessName: selectedBusiness.name,
+          placeId: selectedBusiness.placeId,
+          healthScore: auditReportData.metrics.healthScore,
+          responseRate: auditReportData.metrics.responseRate,
+          totalReviews: auditReportData.metrics.totalReviews,
+          averageRating: String(auditReportData.metrics.averageRating ?? ""),
+        });
+      } catch (syncErr) {
+        console.warn("[FreeTrial] syncHomeAuditLead:", syncErr);
+        toast.error("You're signed in, but we couldn't save your audit lead. Your report is still unlocked.");
+      }
+    }
+
+    try {
+      const me = await utils.auth.me.fetch();
+      if (me?.id && me.id > 0 && trimmed.includes("@")) {
+        linkAuditToUserMutation.mutate({ email: trimmed, userId: me.id });
+      }
+    } catch {
+      /* me query can lag right after setActive */
+    }
+
+    setEmail(trimmed);
+    setEmailCaptured(true);
+    setShowOtpDialog(false);
+    toast.success("You're signed in! Your full report is unlocked.");
   };
 
   // ─── OTP: Verify code ────────────────────────────────────────────────────────
@@ -632,9 +747,7 @@ export default function FreeTrial() {
         if (si.createdSessionId) {
           await setActive({ session: si.createdSessionId });
         }
-        await new Promise((r) => setTimeout(r, 150));
-        toast.success("Welcome back! You're signed in.");
-        setStep(auditBusiness ? "showcase" : "business");
+        await finishOtpUnlock();
       } else if (otpFlow === "signUp" && clerkSignUpAttempt) {
         const su = clerkSignUpAttempt as {
           attemptEmailAddressVerification: (a: { code: string }) => Promise<{ status: string }>;
@@ -648,9 +761,7 @@ export default function FreeTrial() {
         if (su.createdSessionId) {
           await setActive({ session: su.createdSessionId });
         }
-        await new Promise((r) => setTimeout(r, 150));
-        toast.success("Account created! Welcome to WatchReviews.");
-        setStep(auditBusiness ? "showcase" : "business");
+        await finishOtpUnlock();
       } else {
         setOtpError("Session expired — go back and request a new code.");
       }
@@ -674,6 +785,11 @@ export default function FreeTrial() {
 
   const handleSelectBusiness = async (biz: BusinessResult) => {
     setSelectedBusiness(biz);
+    setEmailCaptured(Boolean(isSignedIn));
+    setAuditReportData(null);
+    setShowEmailDialog(false);
+    setShowOtpDialog(false);
+    setStep("audit-loading");
     try {
       const data = await getReviewsMutation.mutateAsync({ placeId: biz.placeId });
       const unanswered = data.reviews.filter((r: ReviewResult) => !r.hasOwnerResponse);
@@ -690,33 +806,57 @@ export default function FreeTrial() {
           setDemoResponse(typeof res.response === "string" ? res.response : String(res.response));
         }).catch(() => {});
       }
-      // Background: run full AI audit and save to DB
+
       setAuditRunning(true);
       sessionStorage.setItem("ft_audit_saving", "1");
       const uid =
         meQuery.data?.id && meQuery.data.id > 0 ? meQuery.data.id : undefined;
-      runAndSaveAuditMutation
-        .mutateAsync({
-          placeId: biz.placeId,
-          businessName: biz.name,
-          businessCategory: biz.category ?? undefined,
-          businessAddress: biz.address ?? undefined,
-          totalReviews: biz.totalReviews ?? null,
-          email: email || undefined,
-          userId: uid,
-        })
-        .then((result) => {
-          setAuditSavedId(result.auditId);
-          sessionStorage.setItem("ft_audit_id", String(result.auditId));
-        })
-        .catch(() => {})
-        .finally(() => {
-          setAuditRunning(false);
-          sessionStorage.removeItem("ft_audit_saving");
-        });
-      setStep("showcase");
+      const em =
+        (clerkUser?.primaryEmailAddress?.emailAddress || email || auditEmail || "").trim();
+      const result = await runAndSaveAuditMutation.mutateAsync({
+        placeId: biz.placeId,
+        businessName: biz.name,
+        businessCategory: biz.category ?? undefined,
+        businessAddress: biz.address ?? undefined,
+        totalReviews: biz.totalReviews ?? null,
+        email: em.includes("@") ? em : undefined,
+        userId: uid,
+      });
+
+      const metrics = result.metrics as AuditMetrics;
+      const analysis = result.analysis as AuditAnalysis;
+      setAuditReportData({ metrics, analysis });
+      setAuditSavedId(result.auditId);
+      sessionStorage.setItem("ft_audit_id", String(result.auditId));
+
+      try {
+        sessionStorage.setItem(
+          FT_HOME_AUDIT_SNAPSHOT_KEY,
+          JSON.stringify({
+            v: 1,
+            placeId: biz.placeId,
+            businessName: biz.name,
+            totalReviews: biz.totalReviews,
+            category: biz.category,
+            address: biz.address,
+            analysis,
+            metrics,
+          })
+        );
+      } catch {
+        /* quota */
+      }
+
+      setStep("audit-report");
+      if (!isSignedIn) {
+        window.setTimeout(() => setShowEmailDialog(true), 2000);
+      }
     } catch {
-      toast.error("Could not load reviews — please try again");
+      toast.error("Could not run your audit — please try again");
+      setStep("business");
+    } finally {
+      setAuditRunning(false);
+      sessionStorage.removeItem("ft_audit_saving");
     }
   };
 
