@@ -7,6 +7,10 @@ import { createServer as createViteServer } from "vite";
 import viteConfig from "../../vite.config";
 
 export async function setupVite(app: Express, server: Server) {
+  const publicRoot = path.resolve(import.meta.dirname, "../..", "client", "public");
+  // Static marketing pages (client/public) must be served before the SPA catch-all
+  app.use(express.static(publicRoot));
+
   const serverOptions = {
     middlewareMode: true,
     hmr: { server },
