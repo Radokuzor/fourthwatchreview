@@ -112,17 +112,8 @@ export default function Home() {
   const [demoResponse, setDemoResponse] = useState("");
   const [demoLoading, setDemoLoading] = useState(false);
 
+  const utils = trpc.useUtils();
   const searchMutation = trpc.audit.searchBusinesses.useMutation();
-  const auditQuery = trpc.audit.getAuditData.useQuery(
-    {
-      placeId: selectedBusiness?.placeId ?? "",
-      businessName: selectedBusiness?.name ?? "",
-      totalReviews: selectedBusiness?.totalReviews ?? null,
-      category: selectedBusiness?.category ?? null,
-      address: selectedBusiness?.address ?? "",
-    },
-    { enabled: false }
-  );
   const syncHomeAuditLeadMutation = trpc.audit.syncHomeAuditLead.useMutation();
   const capturePhoneMutation = trpc.audit.capturePhone.useMutation();
   const [otpCode, setOtpCode] = useState("");
@@ -156,9 +147,14 @@ export default function Home() {
   const handleSelectBusiness = async (biz: BusinessResult) => {
     setSelectedBusiness(biz);
     setStep("loading");
-    const result = await auditQuery.refetch();
-    if (result.data) {
-      const data = result.data as unknown as {
+    try {
+      const data = await utils.audit.getAuditData.fetch({
+        placeId: biz.placeId,
+        businessName: biz.name,
+        totalReviews: biz.totalReviews ?? null,
+        category: biz.category ?? null,
+        address: biz.address,
+      }) as {
         metrics: AuditMetrics;
         analysis: AuditAnalysis;
         reviews: ReviewSummary[];
@@ -182,6 +178,10 @@ export default function Home() {
       } catch {
         /* quota / private mode */
       }
+    } catch {
+      toast.error("Failed to run audit — please try again.");
+      setStep("results");
+      return;
     }
     setStep("audit");
     setTimeout(() => setShowEmailDialog(true), 2000);
