@@ -425,6 +425,68 @@ export async function linkAuditToUser(email: string, userId: number) {
     .where(eq(userAudits.email, email));
 }
 
+// ─── AI Audit Submissions (industry survey) ───────────────────────────────────
+export async function createAiAuditSubmission(data: {
+  industryId: string;
+  industryName: string;
+  contactName: string;
+  businessName: string;
+  email: string;
+  phone?: string | null;
+  websiteUrl?: string | null;
+  answers: Record<string, string>;
+  aiReport?: string | null;
+  reportError?: string | null;
+}): Promise<number | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const { aiAuditSubmissions } = await import("../drizzle/schema");
+  const [result] = await db.insert(aiAuditSubmissions).values({
+    industryId: data.industryId,
+    industryName: data.industryName,
+    contactName: data.contactName,
+    businessName: data.businessName,
+    email: data.email,
+    phone: data.phone ?? null,
+    websiteUrl: data.websiteUrl ?? null,
+    answers: data.answers,
+    aiReport: data.aiReport ?? null,
+    reportError: data.reportError ?? null,
+  });
+  return result.insertId as number;
+}
+
+export async function updateAiAuditSubmissionReport(id: number, aiReport: string) {
+  const db = await getDb();
+  if (!db) return;
+  const { aiAuditSubmissions } = await import("../drizzle/schema");
+  await db
+    .update(aiAuditSubmissions)
+    .set({ aiReport })
+    .where(eq(aiAuditSubmissions.id, id));
+}
+
+export async function markAiAuditSubmissionBooked(id: number) {
+  const db = await getDb();
+  if (!db) return;
+  const { aiAuditSubmissions } = await import("../drizzle/schema");
+  await db
+    .update(aiAuditSubmissions)
+    .set({ bookedMeeting: true })
+    .where(eq(aiAuditSubmissions.id, id));
+}
+
+export async function getAllAiAuditSubmissions(limit = 200) {
+  const db = await getDb();
+  if (!db) return [];
+  const { aiAuditSubmissions } = await import("../drizzle/schema");
+  return db
+    .select()
+    .from(aiAuditSubmissions)
+    .orderBy(desc(aiAuditSubmissions.createdAt))
+    .limit(limit);
+}
+
 /** Hard-delete all app data for a user (locations, reviews, client, audits, leads). Caller deletes Clerk user after. */
 export async function deleteAccountDataForUser(opts: {
   userId: number;

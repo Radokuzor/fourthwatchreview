@@ -32,6 +32,9 @@ import {
   getUserAuditByUserId,
   getUserAuditByEmail,
   linkAuditToUser,
+  createAiAuditSubmission,
+  markAiAuditSubmissionBooked,
+  getAllAiAuditSubmissions,
 } from "./db";
 import {
   approveAndPostResponse,
@@ -463,6 +466,143 @@ export const appRouter = router({
         return { success: true };
       }),
   }),
+  // ─── AI Audit Survey (industry-based discovery questionnaire) ──────────────
+  aiAudit: router({
+    submit: publicProcedure
+      .input(
+        z.object({
+          industryId: z.string().min(1).max(64),
+          industryName: z.string().min(1).max(128),
+          contactName: z.string().min(1).max(255),
+          businessName: z.string().min(1).max(255),
+          location: z.string().min(1).max(255),
+          email: z.string().email(),
+          phone: z.string().min(7).max(30),
+          websiteUrl: z.string().max(512).optional(),
+          answers: z.record(z.string(), z.string()),
+          // Snapshot of the algorithm result so notifications include it
+          summary: z
+            .object({
+              hoursPerWeekSaved: z.number(),
+              monthlyDollarsSaved: z.number(),
+              executiveSummary: z.string(),
+              topOpportunities: z.array(z.string()),
+            })
+            .optional(),
+        })
+      )
+      .mutation(async ({ input }) => {
+        // 1. Persist to DB (gracefully no-op if DB unavailable)
+        let submissionId: number | null = null;
+        try {
+          submissionId = await createAiAuditSubmission({
+            industryId: input.industryId,
+            industryName: input.industryName,
+            contactName: input.contactName,
+            businessName: `${input.businessName} — ${input.location}`,
+            email: input.email,
+            phone: input.phone,
+            websiteUrl: input.websiteUrl ?? null,
+            answers: input.answers,
+          });
+        } catch (err) {
+          console.warn("[AiAudit] DB save failed:", (err as Error)?.message);
+        }
+
+        // 2. Telegram notification to platform owner
+        try {
+          if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_OWNER_CHAT_ID) {
+            const { sendTelegramMessage } = await import("./telegram");
+            const oppLines = (input.summary?.topOpportunities ?? []).slice(0, 3).map((o) => `• ${o}`).join("\n") || "—";
+            const text = [
+              `🤖 <b>New AI Audit Submission</b>`,
+              ``,
+              `🏢 <b>${input.businessName}</b> — ${input.location}`,
+              `🏷 <b>Industry:</b> ${input.industryName}`,
+              `👤 ${input.contactName}`,
+              `✉️ ${input.email}`,
+              `📞 ${input.phone}`,
+              input.websiteUrl ? `🌐 ${input.websiteUrl}` : "",
+              ``,
+              input.summary
+                ? `<b>Algorithm result:</b>\n• ${input.summary.hoursPerWeekSaved} hrs/wk saved\n• $${input.summary.monthlyDollarsSaved.toLocaleString()}/mo recovered`
+                : "",
+              ``,
+              `<b>Top opportunities:</b>\n${oppLines}`,
+            ]
+              .filter(Boolean)
+              .join("\n");
+            await sendTelegramMessage(process.env.TELEGRAM_OWNER_CHAT_ID, text);
+          }
+        } catch (err) {
+          console.warn("[AiAudit] Telegram notify failed:", (err as Error)?.message);
+        }
+
+        // 3. Email notification to platform owner (best-effort)
+        try {
+          const ownerEmail = process.env.AI_AUDIT_NOTIFY_EMAIL || process.env.SMTP_USER;
+          if (ownerEmail && process.env.SMTP_HOST) {
+            const answersHtml = Object.entries(input.answers)
+              .map(([k, v]) => `<tr><td style="padding:6px 12px;color:#475569;font-size:13px;border-bottom:1px solid #e2e8f0">${k}</td><td style="padding:6px 12px;color:#0f172a;font-size:13px;border-bottom:1px solid #e2e8f0">${v}</td></tr>`)
+              .join("");
+            const oppHtml = (input.summary?.topOpportunities ?? []).map((o) => `<li style="margin-bottom:4px">${o}</li>`).join("");
+            const html = `
+              <div style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:640px;margin:0 auto;padding:24px;background:#f8fafc">
+                <div style="background:#ffffff;border-radius:16px;padding:28px;box-shadow:0 4px 16px rgba(0,0,0,0.06)">
+                  <h2 style="color:#0f172a;margin:0 0 4px;font-size:22px">New AI Audit Submission</h2>
+                  <p style="color:#64748b;margin:0 0 20px;font-size:14px">${input.industryName}</p>
+                  <table style="width:100%;border-collapse:collapse;margin-bottom:20px">
+                    <tr><td style="padding:6px 12px;color:#475569;font-size:13px"><strong>Business</strong></td><td style="padding:6px 12px">${input.businessName}</td></tr>
+                    <tr><td style="padding:6px 12px;color:#475569;font-size:13px"><strong>Location</strong></td><td style="padding:6px 12px">${input.location}</td></tr>
+                    <tr><td style="padding:6px 12px;color:#475569;font-size:13px"><strong>Contact</strong></td><td style="padding:6px 12px">${input.contactName}</td></tr>
+                    <tr><td style="padding:6px 12px;color:#475569;font-size:13px"><strong>Email</strong></td><td style="padding:6px 12px"><a href="mailto:${input.email}">${input.email}</a></td></tr>
+                    <tr><td style="padding:6px 12px;color:#475569;font-size:13px"><strong>Phone</strong></td><td style="padding:6px 12px">${input.phone}</td></tr>
+                    ${input.websiteUrl ? `<tr><td style="padding:6px 12px;color:#475569;font-size:13px"><strong>Website</strong></td><td style="padding:6px 12px">${input.websiteUrl}</td></tr>` : ""}
+                  </table>
+                  ${input.summary ? `
+                    <div style="background:#eff6ff;border-radius:12px;padding:16px;margin-bottom:20px">
+                      <div style="color:#1e40af;font-weight:600;font-size:14px;margin-bottom:6px">Algorithm Result</div>
+                      <div style="color:#1e40af;font-size:14px">${input.summary.hoursPerWeekSaved} hrs/wk saved · $${input.summary.monthlyDollarsSaved.toLocaleString()}/mo recovered</div>
+                      <p style="color:#1e3a8a;font-size:13px;margin:8px 0 0">${input.summary.executiveSummary}</p>
+                      ${oppHtml ? `<ul style="color:#1e3a8a;font-size:13px;padding-left:18px;margin:10px 0 0">${oppHtml}</ul>` : ""}
+                    </div>
+                  ` : ""}
+                  <h3 style="color:#0f172a;font-size:15px;margin:20px 0 8px">Survey Answers</h3>
+                  <table style="width:100%;border-collapse:collapse;background:#ffffff;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
+                    ${answersHtml}
+                  </table>
+                </div>
+              </div>
+            `;
+            await sendEmail({
+              to: ownerEmail,
+              subject: `[AI Audit] ${input.businessName} — ${input.industryName}`,
+              html,
+            });
+          }
+        } catch (err) {
+          console.warn("[AiAudit] Owner email failed:", (err as Error)?.message);
+        }
+
+        return { success: true as const, submissionId };
+      }),
+
+    markBooked: publicProcedure
+      .input(z.object({ submissionId: z.number() }))
+      .mutation(async ({ input }) => {
+        try {
+          await markAiAuditSubmissionBooked(input.submissionId);
+        } catch (err) {
+          console.warn("[AiAudit] markBooked failed:", (err as Error)?.message);
+        }
+        return { success: true as const };
+      }),
+
+    listSubmissions: adminProcedure.query(async () => {
+      return getAllAiAuditSubmissions();
+    }),
+  }),
+
   audit: router({
     searchBusinesses: publicProcedure
       .input(z.object({ query: z.string().min(2).max(100) }))

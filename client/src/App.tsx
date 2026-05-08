@@ -13,6 +13,8 @@ import Settings from "./pages/Settings";
 import SignInPage from "./pages/SignIn";
 import PricingPage from "./pages/Pricing";
 import FreeTrial from "./pages/FreeTrial";
+import AiAuditSurvey from "./pages/AiAuditSurvey";
+import AiServices from "./pages/AiServices";
 
 function Router() {
   return (
@@ -29,6 +31,9 @@ function Router() {
       {/* Hidden pricing page — accessed via settings gear in sidebar */}
       <Route path="/pricing" component={PricingPage} />
       <Route path="/free-trial" component={FreeTrial} />
+      {/* Public AI audit survey + services landing */}
+      <Route path="/ai-audit" component={AiAuditSurvey} />
+      <Route path="/ai-services" component={AiServices} />
       <Route path="/404" component={NotFound} />
       <Route component={NotFound} />
     </Switch>

@@ -177,6 +177,27 @@ export const demoApprovals = mysqlTable("demo_approvals", {
 export type DemoApproval = typeof demoApprovals.$inferSelect;
 export type InsertDemoApproval = typeof demoApprovals.$inferInsert;
 
+// ─── AI Audit Submissions (industry survey → AI report) ──────────────────────
+export const aiAuditSubmissions = mysqlTable("ai_audit_submissions", {
+  id: int("id").autoincrement().primaryKey(),
+  industryId: varchar("industryId", { length: 64 }).notNull(),
+  industryName: varchar("industryName", { length: 128 }).notNull(),
+  contactName: varchar("contactName", { length: 255 }).notNull(),
+  businessName: varchar("businessName", { length: 255 }).notNull(),
+  email: varchar("email", { length: 320 }).notNull(),
+  phone: varchar("phone", { length: 30 }),
+  websiteUrl: varchar("websiteUrl", { length: 512 }),
+  // JSON: { [questionId]: answerString }
+  answers: json("answers").notNull(),
+  // Full markdown/HTML report returned by the LLM
+  aiReport: text("aiReport"),
+  reportError: text("reportError"),
+  bookedMeeting: boolean("bookedMeeting").default(false).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type AiAuditSubmission = typeof aiAuditSubmissions.$inferSelect;
+export type InsertAiAuditSubmission = typeof aiAuditSubmissions.$inferInsert;
+
 // ─── User Audits (onboarding + dashboard audit results) ─────────────────────────────────
 export const userAudits = mysqlTable("user_audits", {
   id: int("id").autoincrement().primaryKey(),
